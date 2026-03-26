@@ -1,0 +1,207 @@
+flir_camera:
+  ros__parameters:
+    # --------------------------------------------------------------------------
+    # Base node configuration
+    # --------------------------------------------------------------------------
+    # Camera selection: leave camera_serial empty to use camera_index.
+    camera_serial: ""
+    camera_index: 0
+    frame_id: "flir_camera_optical_frame"
+    acquisition_timeout_ms: 1000
+
+    # Pixel format / output setup
+    # - auto_pixel_format=true:
+    #     node가 ROS에서 다루기 쉬운 Bayer/Mono 포맷을 자동 선택합니다.
+    # - auto_pixel_format=false:
+    #     아래 pixel_format 값을 그대로 카메라에 적용합니다.
+    #
+    # Frequently useful pixel_format examples on this camera:
+    # - "BayerRG8"    : raw Bayer 8-bit, 약 1 byte/pixel
+    # - "BayerRG12p"  : raw Bayer 12-bit packed, camera->PC 링크 절약
+    # - "BayerRG16"   : raw Bayer 16-bit container, 약 2 bytes/pixel
+    # - "Mono8"       : mono 8-bit
+    # - "Mono12p"     : mono 12-bit packed
+    # - "Mono16"      : mono 16-bit
+    # - "RGB8"        : camera가 RGB로 전송, 일부 카메라에서는 RGB8Packed로 해석
+    # - "RGB8Packed"  : camera가 packed RGB로 전송, 약 3 bytes/pixel
+    # - "BGR8"        : camera가 BGR로 전송
+    #
+    # Notes:
+    # - BayerRG10*/12* 와 Mono10*/12* packed 포맷은 카메라->PC 링크에서는
+    #   대역폭을 줄여주지만, ROS의 /image_raw 는 표준 인코딩 호환 때문에
+    #   host에서 16-bit로 풀려 bayer_*16 또는 mono16 으로 퍼블리시됩니다.
+    # - 즉 packed 포맷의 이득은 주로 camera->PC 링크에서 생기고,
+    #   ros2 topic bw /image_raw 에서는 그대로 보이지 않을 수 있습니다.
+    auto_pixel_format: false
+    pixel_format: "BayerRG16"
+    buffer_handling_mode: "NewestOnly"
+    color_processing: "hq_linear"
+
+    # Topic output control
+    # - publish_raw:
+    #     카메라에서 받은 raw/mono/Bayer 프레임을 image_raw 로 퍼블리시
+    # - publish_rgb:
+    #     host PC에서 Spinnaker ImageProcessor로 RGB8 변환 후 image_rgb 퍼블리시
+    # - publish_rgb_compressed:
+    #     host PC에서 RGB8 프레임을 JPEG/PNG 로 압축해서
+    #     image_rgb/compressed 퍼블리시
+    #
+    # Compression notes:
+    # - 압축은 카메라 내부가 아니라 PC에서 수행됩니다.
+    # - 따라서 publish_rgb_compressed 는 ROS 내부/시각화/저장 대역폭은 줄이지만,
+    #   camera->PC 링크 대역폭은 줄이지 않습니다.
+    # - JPEG: lossy, 보통 훨씬 작고 빠름
+    # - PNG : lossless, 보통 더 크고 CPU 사용량이 큼
+    # - publish_rgb 와 publish_rgb_compressed 를 둘 다 true 로 두면
+    #   uncompressed 와 compressed 를 둘 다 보내므로 총 ROS 트래픽은 늘 수 있습니다.
+    publish_raw: true
+    publish_rgb: true
+    publish_rgb_compressed: true
+    rgb_compression_format: "jpeg"
+    # JPEG quality: 0~100, 높을수록 화질↑ 용량↑
+    rgb_jpeg_quality: 90
+    # PNG compression: 0~9, 높을수록 CPU↑ 용량↓
+    rgb_png_compression_level: 3
+
+    # --------------------------------------------------------------------------
+    # Camera control guide for BFS-PGE-27S5C
+    # --------------------------------------------------------------------------
+    # All writable GenICam nodes are exposed as ROS parameters under:
+    #   camera.*
+    #   stream.*
+    #   tl_device.*
+    #
+    # Use these to inspect the exact names and descriptions on your camera:
+    #   ros2 param list /flir_camera
+    #   ros2 param describe /flir_camera camera.AcquisitionFrameRate
+    #
+    # Notes:
+    # - Enum/string values should stay quoted in YAML, for example "Off".
+    # - Some cameras expose both a standard node and a vendor-specific alias
+    #   such as ExposureTime + ExposureTime_FloatVal. Prefer the standard node
+    #   when both exist and work on your model.
+
+    # --------------------------------------------------------------------------
+    # Acquisition / FPS
+    # --------------------------------------------------------------------------
+    # Enables manual frame-rate control.
+    camera.AcquisitionFrameRateEnable: false
+    # Target frame rate in Hz.
+    # camera.AcquisitionFrameRate: 10.0
+    # Multi-frame / burst related controls if you need them:
+    # camera.AcquisitionFrameCount: 1
+    # camera.AcquisitionBurstFrameCount: 1
+
+    # --------------------------------------------------------------------------
+    # Exposure
+    # --------------------------------------------------------------------------
+    # Off | Once | Continuous
+    camera.ExposureAuto: "Off"
+    # Exposure time. On this camera, this alias is writable and works well.
+    camera.ExposureTime_FloatVal: 8000.0
+    # If your model exposes the standard node and it is writable, you can use:
+    # camera.ExposureTime: 8000.0
+    # Exposure mode is camera-specific; inspect valid enum values if needed:
+    # camera.ExposureMode: "Timed"
+
+    # --------------------------------------------------------------------------
+    # Gain
+    # --------------------------------------------------------------------------
+    # Off | Once | Continuous
+    camera.GainAuto: "Off"
+    # Gain in dB.
+    camera.GainDB_Val: 0.0
+    # Optional alternatives/related controls:
+    # camera.Gain: 0.0
+    # camera.GainRaw: 0
+    # camera.GainSelector: "All"
+
+    # --------------------------------------------------------------------------
+    # White balance / color
+    # --------------------------------------------------------------------------
+    # Off | Once | Continuous
+    # camera.BalanceWhiteAuto: "Off"
+    # Select which channel ratio to edit.
+    # camera.BalanceRatioSelector: "Red"     # Red | Blue
+    # Manual white-balance ratio for the selected channel.
+    # camera.BalanceRatio_FloatVal: 1.0
+    # Vendor aliases also exist on this camera:
+    # camera.BalanceRatioBlue_Val: 1.0
+    # camera.BalanceRatioRed_Val: 1.0
+
+    # --------------------------------------------------------------------------
+    # Tone / black level
+    # --------------------------------------------------------------------------
+    # Enables/disables gamma correction.
+    # camera.GammaEnable: false
+    # Gamma value when gamma is enabled.
+    # camera.Gamma_FloatVal: 1.0
+    # Video-signal offset in percent.
+    # camera.BlackLevel: 0.0
+
+    # --------------------------------------------------------------------------
+    # ROI / resolution / sensor-side reduction
+    # --------------------------------------------------------------------------
+    # Width and height of the image in pixels.
+    # camera.Width: 1936
+    # camera.Height: 1464
+    # ROI origin in pixels.
+    # camera.OffsetX: 0
+    # camera.OffsetY: 0
+    # Number of cells to combine.
+    # camera.BinningHorizontal: 1
+    # camera.BinningVertical: 1
+    # Resolution reduction by skipping pixels.
+    # camera.DecimationHorizontal: 1
+    # camera.DecimationVertical: 1
+
+    # --------------------------------------------------------------------------
+    # Trigger / external I/O
+    # --------------------------------------------------------------------------
+    # Which trigger to configure.
+    # camera.TriggerSelector: "FrameStart"   # AcquisitionStart | FrameStart | FrameBurstStart
+    # Enable or disable trigger mode.
+    # camera.TriggerMode: "Off"              # Off | On
+    # Trigger source.
+    # camera.TriggerSource: "Software"       # Software | Line0 | Line2 | Line3 | ...
+    # Optional related controls:
+    # camera.TriggerOverlap: "Off"
+    # camera.TriggerDelay: 0.0
+    # camera.LineSelector: "Line0"
+    # camera.LineMode: "Input"
+    # camera.LineSource: "Off"
+    # camera.LineInverter: false
+
+    # --------------------------------------------------------------------------
+    # Camera-side bandwidth limiting
+    # --------------------------------------------------------------------------
+    # Limits the maximum bandwidth streamed by the camera.
+    # camera.DeviceLinkThroughputLimit: 125000000
+    # Bandwidth reserve for link robustness / resends.
+    # camera.DeviceLinkBandwidthReserve: 0
+
+    # --------------------------------------------------------------------------
+    # Host stream receiver settings
+    # --------------------------------------------------------------------------
+    # Manual buffer count control on the host-side stream receiver.
+    # stream.StreamBufferCountMode: "Manual"
+    # stream.StreamBufferCountManual: 16
+    # Packet resend support for GigE cameras.
+    # stream.StreamPacketResendEnable: true
+    # Wait time after trailer reception before completing an image.
+    # stream.StreamPacketResendTimeout: 40
+    # CRC checking on received images.
+    # stream.StreamCRCCheckEnable: false
+    # Current camera exposes only: "Socket"
+    # stream.StreamMode: "Socket"
+
+    # --------------------------------------------------------------------------
+    # Transport-layer device settings
+    # --------------------------------------------------------------------------
+    # These are low-level GigE Vision transport settings. They are typically
+    # changed only for network bring-up or debugging.
+    # tl_device.GevDeviceForceIPAddress: 3232235777
+    # tl_device.GevDeviceForceSubnetMask: 4294967040
+    # tl_device.GevDeviceForceGateway: 3232235777
+    # tl_device.GevDeviceReadAndWriteTimeout: 1000000
+    # tl_device.GevDeviceMaximumRetryCount: 3

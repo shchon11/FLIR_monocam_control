@@ -1,0 +1,24 @@
+build/
+install/
+log/
+
+# Python cache / bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Test / tooling cache
+.pytest_cache/
+
+# IDE / editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS-specific clutter
+.DS_Store
+
+# Common generated files
+compile_commands.json
