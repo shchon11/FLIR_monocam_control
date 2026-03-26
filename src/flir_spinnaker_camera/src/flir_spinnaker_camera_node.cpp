@@ -5,6 +5,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cctype>
@@ -26,6 +27,8 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rcl_interfaces/msg/parameter_descriptor.hpp"
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
+#include "flir_spinnaker_camera/msg/flir_metadata.hpp"
+#include "sensor_msgs/msg/camera_info.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
 #include "sensor_msgs/image_encodings.hpp"
 #include "sensor_msgs/msg/image.hpp"
@@ -192,6 +195,28 @@ struct RawOutputSpec
   bool requires_conversion;
 };
 
+struct PreparedRawImage
+{
+  ImagePtr image;
+  std::string encoding;
+};
+
+template<std::size_t N>
+std::array<double, N> ToFixedArray(
+  const std::vector<double> & values,
+  const char * parameter_name)
+{
+  if (values.size() != N) {
+    throw std::runtime_error(
+      std::string("Parameter '") + parameter_name + "' must contain exactly " +
+      std::to_string(N) + " values.");
+  }
+
+  std::array<double, N> result{};
+  std::copy(values.begin(), values.end(), result.begin());
+  return result;
+}
+
 enum class ControlMapKind
 {
   Camera,
@@ -314,7 +339,8 @@ public:
   FlirSpinnakerCameraNode()
   : Node("flir_spinnaker_camera"),
     publish_raw_(declare_parameter<bool>("publish_raw", true)),
-    publish_rgb_(declare_parameter<bool>("publish_rgb", true)),
+    publish_camera_info_(declare_parameter<bool>("publish_camera_info", true)),
+    publish_metadata_(declare_parameter<bool>("publish_metadata", true)),
     publish_rgb_compressed_(declare_parameter<bool>("publish_rgb_compressed", true)),
     frame_id_(declare_parameter<std::string>("frame_id", "flir_camera_optical_frame")),
     camera_serial_(declare_parameter<std::string>("camera_serial", "")),
@@ -328,9 +354,9 @@ public:
     rgb_jpeg_quality_(declare_parameter<int>("rgb_jpeg_quality", 90)),
     rgb_png_compression_level_(declare_parameter<int>("rgb_png_compression_level", 3))
   {
-    if (!publish_raw_ && !publish_rgb_ && !publish_rgb_compressed_) {
+    if (!publish_raw_ && !publish_camera_info_ && !publish_metadata_ && !publish_rgb_compressed_) {
       throw std::runtime_error(
-        "At least one of publish_raw, publish_rgb, or publish_rgb_compressed must be true.");
+        "At least one of publish_raw, publish_camera_info, publish_metadata, or publish_rgb_compressed must be true.");
     }
 
     const auto qos = rclcpp::SensorDataQoS();
@@ -339,8 +365,14 @@ public:
       raw_pub_ = create_publisher<sensor_msgs::msg::Image>("image_raw", qos);
     }
 
-    if (publish_rgb_) {
-      rgb_pub_ = create_publisher<sensor_msgs::msg::Image>("image_rgb", qos);
+    if (publish_camera_info_) {
+      camera_info_pub_ = create_publisher<sensor_msgs::msg::CameraInfo>("camera_info", qos);
+    }
+
+    if (publish_metadata_) {
+      metadata_pub_ = create_publisher<flir_spinnaker_camera::msg::FlirMetadata>(
+        "image_raw/metadata",
+        qos);
     }
 
     if (publish_rgb_compressed_) {
@@ -352,6 +384,50 @@ public:
     rgb_compression_format_ = NormalizeCompressionFormat(rgb_compression_format_);
     pixel_format_ = NormalizePixelFormatParameter(pixel_format_);
     image_processor_.SetColorProcessing(ParseColorProcessing(color_processing_));
+
+    camera_info_distortion_model_ = declare_parameter<std::string>(
+      "camera_info.distortion_model",
+      "plumb_bob");
+    camera_info_d_ = declare_parameter<std::vector<double>>(
+      "camera_info.d",
+      std::vector<double>{});
+    camera_info_k_ = ToFixedArray<9>(
+      declare_parameter<std::vector<double>>(
+        "camera_info.k",
+        {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}),
+      "camera_info.k");
+    camera_info_r_ = ToFixedArray<9>(
+      declare_parameter<std::vector<double>>(
+        "camera_info.r",
+        {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}),
+      "camera_info.r");
+    camera_info_p_ = ToFixedArray<12>(
+      declare_parameter<std::vector<double>>(
+        "camera_info.p",
+        {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}),
+      "camera_info.p");
+
+    const int camera_info_binning_x = declare_parameter<int>("camera_info.binning_x", 0);
+    const int camera_info_binning_y = declare_parameter<int>("camera_info.binning_y", 0);
+    const int camera_info_roi_x_offset = declare_parameter<int>("camera_info.roi.x_offset", 0);
+    const int camera_info_roi_y_offset = declare_parameter<int>("camera_info.roi.y_offset", 0);
+    const int camera_info_roi_height = declare_parameter<int>("camera_info.roi.height", 0);
+    const int camera_info_roi_width = declare_parameter<int>("camera_info.roi.width", 0);
+    camera_info_roi_do_rectify_ = declare_parameter<bool>("camera_info.roi.do_rectify", false);
+
+    if (camera_info_binning_x < 0 || camera_info_binning_y < 0 ||
+      camera_info_roi_x_offset < 0 || camera_info_roi_y_offset < 0 ||
+      camera_info_roi_height < 0 || camera_info_roi_width < 0)
+    {
+      throw std::runtime_error("camera_info binning and ROI parameters must be non-negative.");
+    }
+
+    camera_info_binning_x_ = static_cast<std::uint32_t>(camera_info_binning_x);
+    camera_info_binning_y_ = static_cast<std::uint32_t>(camera_info_binning_y);
+    camera_info_roi_x_offset_ = static_cast<std::uint32_t>(camera_info_roi_x_offset);
+    camera_info_roi_y_offset_ = static_cast<std::uint32_t>(camera_info_roi_y_offset);
+    camera_info_roi_height_ = static_cast<std::uint32_t>(camera_info_roi_height);
+    camera_info_roi_width_ = static_cast<std::uint32_t>(camera_info_roi_width);
 
     RCLCPP_INFO(
       get_logger(),
@@ -1066,6 +1142,103 @@ private:
     return msg;
   }
 
+  std::optional<bool> ReadCameraBooleanNodeValue(std::initializer_list<const char *> node_names) const
+  {
+    if (camera_node_map_ == nullptr) {
+      return std::nullopt;
+    }
+
+    for (const char * node_name : node_names) {
+      try {
+        CBooleanPtr bool_node = camera_node_map_->GetNode(node_name);
+        if (IsReadable(bool_node)) {
+          return bool_node->GetValue();
+        }
+      } catch (...) {
+      }
+
+      try {
+        CIntegerPtr int_node = camera_node_map_->GetNode(node_name);
+        if (IsReadable(int_node)) {
+          return int_node->GetValue() != 0;
+        }
+      } catch (...) {
+      }
+    }
+
+    return std::nullopt;
+  }
+
+  std::optional<double> ReadCameraNumericNodeValue(std::initializer_list<const char *> node_names) const
+  {
+    if (camera_node_map_ == nullptr) {
+      return std::nullopt;
+    }
+
+    for (const char * node_name : node_names) {
+      try {
+        CFloatPtr float_node = camera_node_map_->GetNode(node_name);
+        if (IsReadable(float_node)) {
+          return float_node->GetValue();
+        }
+      } catch (...) {
+      }
+
+      try {
+        CIntegerPtr int_node = camera_node_map_->GetNode(node_name);
+        if (IsReadable(int_node)) {
+          return static_cast<double>(int_node->GetValue());
+        }
+      } catch (...) {
+      }
+    }
+
+    return std::nullopt;
+  }
+
+  std::optional<std::string> ReadCameraTextNodeValue(std::initializer_list<const char *> node_names) const
+  {
+    if (camera_node_map_ == nullptr) {
+      return std::nullopt;
+    }
+
+    for (const char * node_name : node_names) {
+      try {
+        CEnumerationPtr enum_node = camera_node_map_->GetNode(node_name);
+        if (IsReadable(enum_node)) {
+          return enum_node->ToString().c_str();
+        }
+      } catch (...) {
+      }
+
+      try {
+        CStringPtr string_node = camera_node_map_->GetNode(node_name);
+        if (IsReadable(string_node)) {
+          return string_node->GetValue().c_str();
+        }
+      } catch (...) {
+      }
+    }
+
+    return std::nullopt;
+  }
+
+  PreparedRawImage PrepareRawImage(const ImagePtr & image) const
+  {
+    const auto raw_spec = RawOutputSpecForPixelFormat(image->GetPixelFormat());
+    if (!raw_spec.has_value()) {
+      throw std::runtime_error(
+        "Pixel format '" + std::string(image->GetPixelFormatName().c_str()) + "' is not mapped to a ROS raw encoding.");
+    }
+
+    ImagePtr raw_image = image;
+    if (raw_spec->requires_conversion) {
+      raw_image = image_processor_.Convert(image, raw_spec->target_pixel_format);
+    }
+
+    return PreparedRawImage{raw_image, raw_spec->encoding};
+  }
+
   std::string NormalizeCompressionFormat(const std::string & value) const
   {
     const std::string normalized = NormalizeName(value);
@@ -1141,22 +1314,59 @@ private:
     return msg;
   }
 
-  sensor_msgs::msg::Image BuildRawImageMessage(
-    const ImagePtr & image,
+  flir_spinnaker_camera::msg::FlirMetadata BuildMetadataMessage(
+    const ImagePtr & original_image,
+    const PreparedRawImage & raw_image,
     const rclcpp::Time & stamp) const
   {
-    const auto raw_spec = RawOutputSpecForPixelFormat(image->GetPixelFormat());
-    if (!raw_spec.has_value()) {
-      throw std::runtime_error(
-        "Pixel format '" + std::string(image->GetPixelFormatName().c_str()) + "' is not mapped to a ROS raw encoding.");
-    }
+    flir_spinnaker_camera::msg::FlirMetadata msg;
+    msg.header.stamp = stamp;
+    msg.header.frame_id = frame_id_;
+    msg.width = static_cast<std::uint32_t>(raw_image.image->GetWidth());
+    msg.height = static_cast<std::uint32_t>(raw_image.image->GetHeight());
+    msg.step = static_cast<std::uint32_t>(raw_image.image->GetStride());
+    msg.encoding = raw_image.encoding;
+    msg.pixel_format = original_image->GetPixelFormatName().c_str();
+    msg.camera_frame_id = original_image->GetFrameID();
+    msg.camera_timestamp_ns = original_image->GetTimeStamp();
+    msg.acquisition_frame_rate_enable =
+      ReadCameraBooleanNodeValue({"AcquisitionFrameRateEnable"}).value_or(false);
+    msg.acquisition_frame_rate_hz =
+      ReadCameraNumericNodeValue({"AcquisitionFrameRate", "FrameRateHz_Val"}).value_or(std::nan(""));
+    msg.exposure_auto = ReadCameraTextNodeValue({"ExposureAuto"}).value_or("");
+    msg.exposure_time_us =
+      ReadCameraNumericNodeValue({"ExposureTime", "ExposureTime_FloatVal", "ExposureTime_Val"}).value_or(std::nan(""));
+    msg.gain_auto = ReadCameraTextNodeValue({"GainAuto"}).value_or("");
+    msg.gain_db = ReadCameraNumericNodeValue({"Gain", "GainDB_Val", "Gain_Val"}).value_or(std::nan(""));
+    msg.black_level = ReadCameraNumericNodeValue({"BlackLevel", "BlackLevel_Val"}).value_or(std::nan(""));
+    msg.gamma_enable = ReadCameraBooleanNodeValue({"GammaEnable", "GammaEnable_Val"}).value_or(false);
+    msg.gamma = ReadCameraNumericNodeValue({"Gamma", "Gamma_FloatVal", "Gamma_Val"}).value_or(std::nan(""));
+    msg.balance_white_auto = ReadCameraTextNodeValue({"BalanceWhiteAuto"}).value_or("");
+    return msg;
+  }
 
-    ImagePtr raw_image = image;
-    if (raw_spec->requires_conversion) {
-      raw_image = image_processor_.Convert(image, raw_spec->target_pixel_format);
-    }
-
-    return BuildImageMessage(raw_image, raw_spec->encoding, stamp);
+  sensor_msgs::msg::CameraInfo BuildCameraInfoMessage(
+    const PreparedRawImage & raw_image,
+    const rclcpp::Time & stamp) const
+  {
+    sensor_msgs::msg::CameraInfo msg;
+    msg.header.stamp = stamp;
+    msg.header.frame_id = frame_id_;
+    msg.width = static_cast<std::uint32_t>(raw_image.image->GetWidth());
+    msg.height = static_cast<std::uint32_t>(raw_image.image->GetHeight());
+    msg.distortion_model = camera_info_distortion_model_;
+    msg.d = camera_info_d_;
+    std::copy(camera_info_k_.begin(), camera_info_k_.end(), msg.k.begin());
+    std::copy(camera_info_r_.begin(), camera_info_r_.end(), msg.r.begin());
+    std::copy(camera_info_p_.begin(), camera_info_p_.end(), msg.p.begin());
+    msg.binning_x = camera_info_binning_x_;
+    msg.binning_y = camera_info_binning_y_;
+    msg.roi.x_offset = camera_info_roi_x_offset_;
+    msg.roi.y_offset = camera_info_roi_y_offset_;
+    msg.roi.height = camera_info_roi_height_;
+    msg.roi.width = camera_info_roi_width_;
+    msg.roi.do_rectify = camera_info_roi_do_rectify_;
+    return msg;
   }
 
   void AcquisitionLoop()
@@ -1178,7 +1388,7 @@ private:
 
         const rclcpp::Time stamp = now();
 
-        if (publish_raw_) {
+        if (publish_raw_ || publish_camera_info_ || publish_metadata_) {
           const auto raw_spec = RawOutputSpecForPixelFormat(image->GetPixelFormat());
           if (!raw_spec.has_value()) {
             const std::string pixel_format_name = image->GetPixelFormatName().c_str();
@@ -1189,24 +1399,28 @@ private:
               "Skipping image_raw publish because pixel format '%s' is not mapped to a ROS encoding.",
               pixel_format_name.c_str());
           } else {
-            raw_pub_->publish(BuildRawImageMessage(image, stamp));
+            const PreparedRawImage raw_image = PrepareRawImage(image);
+
+            if (publish_raw_) {
+              raw_pub_->publish(BuildImageMessage(raw_image.image, raw_image.encoding, stamp));
+            }
+
+            if (publish_camera_info_) {
+              camera_info_pub_->publish(BuildCameraInfoMessage(raw_image, stamp));
+            }
+
+            if (publish_metadata_) {
+              metadata_pub_->publish(BuildMetadataMessage(image, raw_image, stamp));
+            }
           }
         }
 
-        if (publish_rgb_ || publish_rgb_compressed_) {
+        if (publish_rgb_compressed_) {
           ImagePtr rgb_image = image;
           if (image->GetPixelFormat() != Spinnaker::PixelFormat_RGB8 &&
             image->GetPixelFormat() != Spinnaker::PixelFormat_RGB8Packed)
           {
             rgb_image = image_processor_.Convert(image, Spinnaker::PixelFormat_RGB8);
-          }
-
-          if (publish_rgb_) {
-            rgb_pub_->publish(
-              BuildImageMessage(
-                rgb_image,
-                sensor_msgs::image_encodings::RGB8,
-                stamp));
           }
 
           if (publish_rgb_compressed_) {
@@ -1286,7 +1500,8 @@ private:
   }
 
   bool publish_raw_;
-  bool publish_rgb_;
+  bool publish_camera_info_;
+  bool publish_metadata_;
   bool publish_rgb_compressed_;
   std::string frame_id_;
   std::string camera_serial_;
@@ -1299,9 +1514,22 @@ private:
   std::string rgb_compression_format_;
   int rgb_jpeg_quality_;
   int rgb_png_compression_level_;
+  std::string camera_info_distortion_model_;
+  std::vector<double> camera_info_d_;
+  std::array<double, 9> camera_info_k_{};
+  std::array<double, 9> camera_info_r_{};
+  std::array<double, 12> camera_info_p_{};
+  std::uint32_t camera_info_binning_x_{0};
+  std::uint32_t camera_info_binning_y_{0};
+  std::uint32_t camera_info_roi_x_offset_{0};
+  std::uint32_t camera_info_roi_y_offset_{0};
+  std::uint32_t camera_info_roi_height_{0};
+  std::uint32_t camera_info_roi_width_{0};
+  bool camera_info_roi_do_rectify_{false};
 
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr raw_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr rgb_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_pub_;
+  rclcpp::Publisher<flir_spinnaker_camera::msg::FlirMetadata>::SharedPtr metadata_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr rgb_compressed_pub_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr control_parameter_callback_handle_;
 

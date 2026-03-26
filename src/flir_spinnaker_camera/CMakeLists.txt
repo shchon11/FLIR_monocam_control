@@ -8,8 +8,15 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS imgcodecs imgproc)
 find_package(rclcpp REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(Threads REQUIRED)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/FlirMetadata.msg"
+  DEPENDENCIES std_msgs
+)
 
 find_path(SPINNAKER_INCLUDE_DIR
   NAMES Spinnaker.h
@@ -55,7 +62,11 @@ set_target_properties(flir_spinnaker_camera_node PROPERTIES
 ament_target_dependencies(flir_spinnaker_camera_node
   rclcpp
   sensor_msgs
+  std_msgs
 )
+
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} rosidl_typesupport_cpp)
+target_link_libraries(flir_spinnaker_camera_node ${cpp_typesupport_target})
 
 install(TARGETS flir_spinnaker_camera_node
   DESTINATION lib/${PROJECT_NAME}
@@ -71,5 +82,7 @@ install(FILES
   README.md
   DESTINATION share/${PROJECT_NAME}
 )
+
+ament_export_dependencies(rosidl_default_runtime)
 
 ament_package()

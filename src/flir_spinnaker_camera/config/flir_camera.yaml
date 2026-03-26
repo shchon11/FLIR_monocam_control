@@ -40,8 +40,10 @@ flir_camera:
     # Topic output control
     # - publish_raw:
     #     카메라에서 받은 raw/mono/Bayer 프레임을 image_raw 로 퍼블리시
-    # - publish_rgb:
-    #     host PC에서 Spinnaker ImageProcessor로 RGB8 변환 후 image_rgb 퍼블리시
+    # - publish_camera_info:
+    #     기본 CameraInfo 를 camera_info 로 퍼블리시
+    # - publish_metadata:
+    #     per-frame capture metadata topic at image_raw/metadata
     # - publish_rgb_compressed:
     #     host PC에서 RGB8 프레임을 JPEG/PNG 로 압축해서
     #     image_rgb/compressed 퍼블리시
@@ -52,16 +54,39 @@ flir_camera:
     #   camera->PC 링크 대역폭은 줄이지 않습니다.
     # - JPEG: lossy, 보통 훨씬 작고 빠름
     # - PNG : lossless, 보통 더 크고 CPU 사용량이 큼
-    # - publish_rgb 와 publish_rgb_compressed 를 둘 다 true 로 두면
-    #   uncompressed 와 compressed 를 둘 다 보내므로 총 ROS 트래픽은 늘 수 있습니다.
     publish_raw: true
-    publish_rgb: true
+    publish_camera_info: true
+    publish_metadata: true
     publish_rgb_compressed: true
     rgb_compression_format: "jpeg"
     # JPEG quality: 0~100, 높을수록 화질↑ 용량↑
     rgb_jpeg_quality: 90
     # PNG compression: 0~9, 높을수록 CPU↑ 용량↓
     rgb_png_compression_level: 3
+
+    # CameraInfo calibration / geometry
+    # Fill these later when you have calibration results.
+    # distortion_model examples: plumb_bob, rational_polynomial, equidistant
+    camera_info.distortion_model: "plumb_bob"
+    # Distortion coefficients. Typical pinhole camera uses 5 values:
+    #   [k1, k2, t1, t2, k3]
+    # Keep numeric placeholders here because ROS 2 YAML cannot infer a typed
+    # float array from an empty list like [].
+    camera_info.d: [0.0, 0.0, 0.0, 0.0, 0.0]
+    # Intrinsic camera matrix K (row-major, 3x3)
+    camera_info.k: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    # Rectification matrix R (row-major, 3x3)
+    camera_info.r: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    # Projection/camera matrix P (row-major, 3x4)
+    camera_info.p: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    # Binning and ROI are optional CameraInfo fields.
+    camera_info.binning_x: 0
+    camera_info.binning_y: 0
+    camera_info.roi.x_offset: 0
+    camera_info.roi.y_offset: 0
+    camera_info.roi.height: 0
+    camera_info.roi.width: 0
+    camera_info.roi.do_rectify: false
 
     # --------------------------------------------------------------------------
     # Camera control guide for BFS-PGE-27S5C

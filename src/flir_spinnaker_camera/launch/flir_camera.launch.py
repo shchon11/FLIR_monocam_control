@@ -29,7 +29,7 @@ def _build_camera_node(context):
         if value is not None:
             parameter_overrides[name] = value
 
-    for name in ("auto_pixel_format", "publish_rgb", "publish_rgb_compressed"):
+    for name in ("auto_pixel_format", "publish_camera_info", "publish_metadata", "publish_rgb_compressed"):
         value = _optional_override(context, name, _parse_bool)
         if value is not None:
             parameter_overrides[name] = value
@@ -92,9 +92,14 @@ def generate_launch_description():
                 description="Optional camera PixelFormat override such as BayerRG8, BayerRG12p, or BayerRG16.",
             ),
             DeclareLaunchArgument(
-                "publish_rgb",
+                "publish_camera_info",
                 default_value="",
-                description="Optional publish_rgb override. Empty keeps the YAML value.",
+                description="Optional publish_camera_info override. Empty keeps the YAML value.",
+            ),
+            DeclareLaunchArgument(
+                "publish_metadata",
+                default_value="",
+                description="Optional publish_metadata override. Empty keeps the YAML value.",
             ),
             DeclareLaunchArgument(
                 "publish_rgb_compressed",
