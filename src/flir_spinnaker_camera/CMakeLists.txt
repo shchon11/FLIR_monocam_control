@@ -18,21 +18,41 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   DEPENDENCIES std_msgs
 )
 
+set(SPINNAKER_ROOT "$ENV{SPINNAKER_ROOT}" CACHE PATH "Spinnaker SDK root directory")
+
+set(_spinnaker_include_hints)
+set(_spinnaker_library_hints)
+if(SPINNAKER_ROOT)
+  list(APPEND _spinnaker_include_hints
+    "${SPINNAKER_ROOT}"
+    "${SPINNAKER_ROOT}/include"
+  )
+  list(APPEND _spinnaker_library_hints
+    "${SPINNAKER_ROOT}"
+    "${SPINNAKER_ROOT}/lib"
+    "${SPINNAKER_ROOT}/lib64"
+  )
+endif()
+
 find_path(SPINNAKER_INCLUDE_DIR
   NAMES Spinnaker.h
-  PATHS /opt/spinnaker/include
-  NO_DEFAULT_PATH
+  HINTS ${_spinnaker_include_hints}
+  PATH_SUFFIXES include
 )
 
 find_library(SPINNAKER_LIBRARY
   NAMES Spinnaker
-  PATHS /opt/spinnaker/lib
-  NO_DEFAULT_PATH
+  HINTS ${_spinnaker_library_hints}
+  PATH_SUFFIXES lib lib64
 )
 
 if(NOT SPINNAKER_INCLUDE_DIR OR NOT SPINNAKER_LIBRARY)
-  message(FATAL_ERROR "Spinnaker SDK not found under /opt/spinnaker")
+  message(FATAL_ERROR
+    "Spinnaker SDK not found. Set SPINNAKER_ROOT or make the SDK discoverable via CMAKE_PREFIX_PATH."
+  )
 endif()
+
+get_filename_component(SPINNAKER_LIBRARY_DIR ${SPINNAKER_LIBRARY} DIRECTORY)
 
 add_executable(flir_spinnaker_camera_node
   src/flir_spinnaker_camera_node.cpp
@@ -55,8 +75,8 @@ target_link_libraries(flir_spinnaker_camera_node
 )
 
 set_target_properties(flir_spinnaker_camera_node PROPERTIES
-  BUILD_RPATH /opt/spinnaker/lib
-  INSTALL_RPATH /opt/spinnaker/lib
+  BUILD_RPATH ${SPINNAKER_LIBRARY_DIR}
+  INSTALL_RPATH ${SPINNAKER_LIBRARY_DIR}
 )
 
 ament_target_dependencies(flir_spinnaker_camera_node
