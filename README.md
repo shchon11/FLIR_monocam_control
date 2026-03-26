@@ -1,4 +1,4 @@
-# FLIR ROS Bandwidth Test
+# FLIR Publisher
 
 FLIR/Teledyne Spinnaker 카메라를 ROS 2 Humble에서 다루기 위한 워크스페이스입니다.
 
