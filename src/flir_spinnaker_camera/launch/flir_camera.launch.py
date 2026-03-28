@@ -24,17 +24,33 @@ def _optional_override(context, name, parser=None):
 def _build_camera_node(context):
     parameter_overrides = {}
 
-    for name in ("camera_serial", "frame_id", "pixel_format", "rgb_compression_format"):
+    for name in (
+        "camera_serial",
+        "frame_id",
+        "pixel_format",
+        "rgb_compression_format",
+        "publisher_qos_reliability",
+        "camera_info_yaml_path",
+    ):
         value = _optional_override(context, name)
         if value is not None:
-            parameter_overrides[name] = value
+            if name == "camera_info_yaml_path":
+                parameter_overrides["camera_info.yaml_path"] = value
+            else:
+                parameter_overrides[name] = value
 
-    for name in ("auto_pixel_format", "publish_camera_info", "publish_metadata", "publish_rgb_compressed"):
+    for name in (
+        "auto_pixel_format",
+        "publish_camera_info",
+        "publish_metadata",
+        "publish_rgb_compressed",
+        "use_camera_timestamp_in_header",
+    ):
         value = _optional_override(context, name, _parse_bool)
         if value is not None:
             parameter_overrides[name] = value
 
-    for name in ("rgb_jpeg_quality", "rgb_png_compression_level"):
+    for name in ("rgb_jpeg_quality", "rgb_png_compression_level", "publisher_qos_depth"):
         value = _optional_override(context, name, int)
         if value is not None:
             parameter_overrides[name] = value
@@ -82,9 +98,24 @@ def generate_launch_description():
                 description="Optional frame_id override. Empty keeps the YAML value.",
             ),
             DeclareLaunchArgument(
+                "camera_info_yaml_path",
+                default_value="",
+                description="Optional path to a calibration YAML whose camera_info.* values override the defaults.",
+            ),
+            DeclareLaunchArgument(
+                "publisher_qos_reliability",
+                default_value="",
+                description="Optional publisher QoS reliability override: reliable or best_effort.",
+            ),
+            DeclareLaunchArgument(
                 "auto_pixel_format",
                 default_value="",
                 description="Optional auto_pixel_format override. Empty keeps the YAML value.",
+            ),
+            DeclareLaunchArgument(
+                "use_camera_timestamp_in_header",
+                default_value="",
+                description="Optional header timestamp source override. True uses camera timestamps when available.",
             ),
             DeclareLaunchArgument(
                 "pixel_format",
@@ -120,6 +151,11 @@ def generate_launch_description():
                 "rgb_png_compression_level",
                 default_value="",
                 description="Optional PNG compression level override for /image_rgb/compressed.",
+            ),
+            DeclareLaunchArgument(
+                "publisher_qos_depth",
+                default_value="",
+                description="Optional publisher QoS queue depth override.",
             ),
             OpaqueFunction(function=_build_camera_node),
         ]

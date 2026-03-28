@@ -5,6 +5,8 @@ FLIR/Teledyne Spinnaker 카메라용 ROS 2 Humble 워크스페이스.
 핵심 패키지:
 
 - `flir_spinnaker_camera`
+- `flir_camera_calibration`
+- `flir_camera_undistort_viewer`
 
 퍼블리시 토픽:
 
@@ -12,6 +14,8 @@ FLIR/Teledyne Spinnaker 카메라용 ROS 2 Humble 워크스페이스.
 - `/camera_info`
 - `/image_raw/metadata`
 - `/image_rgb/compressed`
+- `/calibration/image_annotated/compressed`
+- `/image_rgb/undistorted/compressed`
 
 목적:
 
@@ -19,6 +23,8 @@ FLIR/Teledyne Spinnaker 카메라용 ROS 2 Humble 워크스페이스.
 - 8/12/16-bit 포맷 비교
 - camera -> PC 링크 대역폭과 ROS 내부 토픽 대역폭 구분
 - calibration 값을 `/camera_info`에 바로 넣기
+- calibration 보드 검출/샘플 수집
+- calibration 결과로 왜곡 보정된 compressed 토픽 퍼블리시
 
 ## 구조
 
@@ -38,6 +44,10 @@ FLIR/Teledyne Spinnaker 카메라용 ROS 2 Humble 워크스페이스.
 - `/camera_info`: intrinsic, distortion, ROI, binning
 - `/image_raw/metadata`: per-frame 촬영 메타데이터
 - `/image_rgb/compressed`: host에서 만든 압축 RGB
+- `/calibration/image_annotated/compressed`: calibration helper preview
+- `/image_rgb/undistorted/compressed`: calibration 결과를 적용한 왜곡 보정 이미지
+- 각 토픽의 `header.stamp`: 기본적으로 host 수신 시각
+- 원본 장치 timestamp는 `/image_raw/metadata.camera_timestamp_ns`에 유지
 
 ## 요구 사항
 
@@ -182,6 +192,9 @@ ros2 launch flir_spinnaker_camera flir_camera.launch.py --show-args
 - `camera_serial`
 - `camera_index`
 - `frame_id`
+- `publisher_qos_reliability`
+- `publisher_qos_depth`
+- `use_camera_timestamp_in_header`
 - `auto_pixel_format`
 - `pixel_format`
 - `publish_raw`
@@ -215,6 +228,14 @@ ros2 param list /flir_camera
 - `camera.GainDB_Val`
 
 모델마다 이름이 조금 다를 수 있음. 실제 파라미터 목록 기준으로 보는 게 안전.
+
+주의:
+
+- `camera.ExposureAuto`가 `"Continuous"` 또는 `"Once"`면 `camera.ExposureTime*`은 쓰기 불가가 될 수 있음
+- `camera.GainAuto`가 `"Continuous"` 또는 `"Once"`면 `camera.Gain*`도 쓰기 불가가 될 수 있음
+- 수동 값을 startup override로 넣을 때는 대응하는 auto 파라미터를 `"Off"`로 두거나 수동 override를 주석 처리하는 쪽이 안전
+- `use_camera_timestamp_in_header: true`는 일부 GigE/PTP 환경에서 header stamp가 비단조로 보일 수 있어 기본값은 `false`
+- 기본 publisher QoS는 `reliable` + depth `20`으로 두었고, 큰 이미지 토픽에서 subscriber 쪽 드롭이 보이면 이 값을 먼저 확인하는 게 좋음
 
 ## Pixel Format
 

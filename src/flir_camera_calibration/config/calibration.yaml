@@ -1,0 +1,27 @@
+flir_camera_calibration:
+  ros__parameters:
+    input_topic: "/image_rgb/compressed"
+    annotated_output_topic: "/calibration/image_annotated/compressed"
+    output_yaml_path: "calibration/flir_camera_info.yaml"
+    sample_image_dir: "calibration/captures"
+
+    # Chessboard inner-corner count, not square count.
+    board_cols: 6
+    board_rows: 5
+    square_size_m: 0.08
+    min_calibration_frames: 15
+
+    display_window: true
+    window_name: "FLIR Calibration"
+    preview_scale: 1.0
+    preview_max_width: 640
+    preview_fast_check: true
+    annotated_jpeg_quality: 80
+
+    # Keep the subscription permissive so it can connect to sensor-data publishers.
+    input_qos_reliability: "best_effort"
+    input_qos_depth: 10
+
+    # Publish the annotated preview more reliably for tools that inspect the overlay.
+    output_qos_reliability: "reliable"
+    output_qos_depth: 10

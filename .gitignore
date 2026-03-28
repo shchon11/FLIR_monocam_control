@@ -22,3 +22,6 @@ __pycache__/
 
 # Common generated files
 compile_commands.json
+
+# Calibration artifacts
+calibration/captures/

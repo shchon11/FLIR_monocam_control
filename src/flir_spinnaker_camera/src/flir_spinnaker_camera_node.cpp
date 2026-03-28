@@ -13,10 +13,14 @@
 #include <cstring>
 #include <cmath>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -69,6 +73,118 @@ std::string NormalizeName(std::string value)
   }
 
   return normalized;
+}
+
+std::string TrimAscii(std::string value)
+{
+  const auto is_space = [](unsigned char character) {
+      return std::isspace(character) != 0;
+    };
+
+  value.erase(
+    value.begin(),
+    std::find_if_not(value.begin(), value.end(), is_space));
+  value.erase(
+    std::find_if_not(value.rbegin(), value.rend(), is_space).base(),
+    value.end());
+  return value;
+}
+
+std::optional<std::string> MatchYamlScalarValue(const std::string & line, const char * key)
+{
+  const std::string trimmed = TrimAscii(line);
+  if (trimmed.empty() || trimmed[0] == '#') {
+    return std::nullopt;
+  }
+
+  const std::string prefix = std::string(key) + ":";
+  if (trimmed.rfind(prefix, 0) != 0) {
+    return std::nullopt;
+  }
+
+  return TrimAscii(trimmed.substr(prefix.size()));
+}
+
+std::string StripMatchingQuotes(std::string value)
+{
+  if (value.size() >= 2U) {
+    const bool is_double_quoted = value.front() == '"' && value.back() == '"';
+    const bool is_single_quoted = value.front() == '\'' && value.back() == '\'';
+    if (is_double_quoted || is_single_quoted) {
+      return value.substr(1, value.size() - 2U);
+    }
+  }
+
+  return value;
+}
+
+std::vector<double> ParseYamlDoubleList(const std::string & raw_value, const char * field_name)
+{
+  const std::string trimmed = TrimAscii(raw_value);
+  if (trimmed.size() < 2U || trimmed.front() != '[' || trimmed.back() != ']') {
+    throw std::runtime_error(
+      std::string("Expected a YAML list for '") + field_name + "'.");
+  }
+
+  const std::string body = TrimAscii(trimmed.substr(1, trimmed.size() - 2U));
+  if (body.empty()) {
+    return {};
+  }
+
+  std::vector<double> values;
+  std::stringstream stream(body);
+  std::string token;
+  while (std::getline(stream, token, ',')) {
+    token = TrimAscii(token);
+    if (token.empty()) {
+      throw std::runtime_error(
+        std::string("Encountered an empty numeric value while parsing '") + field_name + "'.");
+    }
+
+    std::size_t consumed = 0U;
+    const double parsed_value = std::stod(token, &consumed);
+    if (consumed != token.size()) {
+      throw std::runtime_error(
+        std::string("Failed to fully parse numeric value '") + token + "' for '" + field_name + "'.");
+    }
+
+    values.push_back(parsed_value);
+  }
+
+  return values;
+}
+
+int ParseYamlNonNegativeInt(const std::string & raw_value, const char * field_name)
+{
+  const std::string trimmed = TrimAscii(raw_value);
+  std::size_t consumed = 0U;
+  const int parsed_value = std::stoi(trimmed, &consumed);
+  if (consumed != trimmed.size()) {
+    throw std::runtime_error(
+      std::string("Failed to fully parse integer value '") + trimmed + "' for '" + field_name + "'.");
+  }
+
+  if (parsed_value < 0) {
+    throw std::runtime_error(
+      std::string("Expected a non-negative integer for '") + field_name + "'.");
+  }
+
+  return parsed_value;
+}
+
+bool ParseYamlBool(const std::string & raw_value, const char * field_name)
+{
+  const std::string normalized = NormalizeName(raw_value);
+  if (normalized == "true" || normalized == "1" || normalized == "yes" || normalized == "on") {
+    return true;
+  }
+
+  if (normalized == "false" || normalized == "0" || normalized == "no" || normalized == "off") {
+    return false;
+  }
+
+  throw std::runtime_error(
+    std::string("Failed to parse boolean value '") + raw_value + "' for '" + field_name + "'.");
 }
 
 bool IsHostBigEndian()
@@ -240,6 +356,12 @@ struct ControlBinding
   std::string node_name;
 };
 
+struct NamedStringParameter
+{
+  std::string name;
+  std::string value;
+};
+
 std::optional<RawOutputSpec> RawOutputSpecForPixelFormat(PixelFormatEnums pixel_format)
 {
   switch (pixel_format) {
@@ -342,13 +464,17 @@ public:
     publish_camera_info_(declare_parameter<bool>("publish_camera_info", true)),
     publish_metadata_(declare_parameter<bool>("publish_metadata", true)),
     publish_rgb_compressed_(declare_parameter<bool>("publish_rgb_compressed", true)),
+    publisher_qos_reliability_(declare_parameter<std::string>("publisher_qos_reliability", "reliable")),
+    publisher_qos_depth_(declare_parameter<int>("publisher_qos_depth", 20)),
     frame_id_(declare_parameter<std::string>("frame_id", "flir_camera_optical_frame")),
     camera_serial_(declare_parameter<std::string>("camera_serial", "")),
     camera_index_(declare_parameter<int>("camera_index", 0)),
     acquisition_timeout_ms_(declare_parameter<int>("acquisition_timeout_ms", 1000)),
+    use_camera_timestamp_in_header_(declare_parameter<bool>("use_camera_timestamp_in_header", false)),
+    camera_info_yaml_path_(declare_parameter<std::string>("camera_info.yaml_path", "")),
     auto_pixel_format_(declare_parameter<bool>("auto_pixel_format", true)),
     pixel_format_(declare_parameter<std::string>("pixel_format", "")),
-    buffer_handling_mode_(declare_parameter<std::string>("buffer_handling_mode", "NewestOnly")),
+    buffer_handling_mode_(declare_parameter<std::string>("buffer_handling_mode", "OldestFirst")),
     color_processing_(declare_parameter<std::string>("color_processing", "hq_linear")),
     rgb_compression_format_(declare_parameter<std::string>("rgb_compression_format", "jpeg")),
     rgb_jpeg_quality_(declare_parameter<int>("rgb_jpeg_quality", 90)),
@@ -359,7 +485,7 @@ public:
         "At least one of publish_raw, publish_camera_info, publish_metadata, or publish_rgb_compressed must be true.");
     }
 
-    const auto qos = rclcpp::SensorDataQoS();
+    const auto qos = BuildPublisherQoS();
 
     if (publish_raw_) {
       raw_pub_ = create_publisher<sensor_msgs::msg::Image>("image_raw", qos);
@@ -429,11 +555,17 @@ public:
     camera_info_roi_height_ = static_cast<std::uint32_t>(camera_info_roi_height);
     camera_info_roi_width_ = static_cast<std::uint32_t>(camera_info_roi_width);
 
+    if (!camera_info_yaml_path_.empty()) {
+      ApplyCameraInfoYamlOverrides(camera_info_yaml_path_);
+    }
+
     RCLCPP_INFO(
       get_logger(),
-      "RGB compressed publish=%s format=%s",
+      "RGB compressed publish=%s format=%s qos_reliability=%s qos_depth=%d",
       publish_rgb_compressed_ ? "true" : "false",
-      rgb_compression_format_.c_str());
+      rgb_compression_format_.c_str(),
+      NormalizeQoSReliability(publisher_qos_reliability_).c_str(),
+      publisher_qos_depth_);
 
     try {
       InitializeCamera();
@@ -812,6 +944,88 @@ private:
     return 10;
   }
 
+  static bool ParameterNameMatches(
+    const std::string & parameter_name,
+    std::initializer_list<const char *> candidates)
+  {
+    for (const char * candidate : candidates) {
+      if (parameter_name == candidate) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  std::optional<NamedStringParameter> FindStringParameterValue(
+    std::initializer_list<const char *> parameter_names) const
+  {
+    for (const char * parameter_name : parameter_names) {
+      rclcpp::Parameter parameter;
+      if (!get_parameter(parameter_name, parameter)) {
+        continue;
+      }
+
+      if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_STRING) {
+        continue;
+      }
+
+      return NamedStringParameter{parameter_name, parameter.as_string()};
+    }
+
+    return std::nullopt;
+  }
+
+  std::optional<std::string> ControlOverrideHint(const rclcpp::Parameter & parameter) const
+  {
+    if (ParameterNameMatches(
+        parameter.get_name(),
+        {
+          "camera.ExposureTime",
+          "camera.ExposureTime_FloatVal",
+          "camera.ExposureTime_Val",
+          "camera.ExposureTimeRaw_Val"}))
+    {
+      const auto exposure_auto = FindStringParameterValue({"camera.ExposureAuto", "camera.ExposureAuto_Val"});
+      if (exposure_auto.has_value() && NormalizeName(exposure_auto->value) != "off") {
+        return "Set '" + exposure_auto->name + "' to 'Off' before applying a manual exposure override, "
+               "or remove '" + parameter.get_name() + "' from the startup parameters.";
+      }
+    }
+
+    if (ParameterNameMatches(
+        parameter.get_name(),
+        {
+          "camera.Gain",
+          "camera.GainDB_Val",
+          "camera.Gain_Val",
+          "camera.GainRaw_Val"}))
+    {
+      const auto gain_auto = FindStringParameterValue({"camera.GainAuto", "camera.GainAuto_Val"});
+      if (gain_auto.has_value() && NormalizeName(gain_auto->value) != "off") {
+        return "Set '" + gain_auto->name + "' to 'Off' before applying a manual gain override, "
+               "or remove '" + parameter.get_name() + "' from the startup parameters.";
+      }
+    }
+
+    return std::nullopt;
+  }
+
+  std::string BuildControlOverrideFailureMessage(
+    const std::string & prefix,
+    const rclcpp::Parameter & parameter,
+    const std::exception & exception) const
+  {
+    std::string message = prefix + "'" + parameter.get_name() + "': " + exception.what();
+    const auto hint = ControlOverrideHint(parameter);
+    if (hint.has_value()) {
+      message += " ";
+      message += *hint;
+    }
+
+    return message;
+  }
+
   void ApplyPendingControlOverrides()
   {
     if (pending_control_overrides_.empty()) {
@@ -847,7 +1061,10 @@ private:
           ApplyControlParameterValue(control_bindings_.at(parameter.get_name()), parameter);
           ++applied;
         } catch (const std::exception & exception) {
-          last_error = "Failed to apply startup override '" + parameter.get_name() + "': " + exception.what();
+          last_error = BuildControlOverrideFailureMessage(
+            "Failed to apply startup override ",
+            parameter,
+            exception);
           next_pass.push_back(parameter);
         }
       }
@@ -951,7 +1168,7 @@ private:
         ApplyControlParameterValue(binding_it->second, parameter);
       } catch (const std::exception & exception) {
         result.successful = false;
-        result.reason = "Failed to set '" + parameter.get_name() + "': " + exception.what();
+        result.reason = BuildControlOverrideFailureMessage("Failed to set ", parameter, exception);
         return result;
       }
     }
@@ -1249,6 +1466,137 @@ private:
     return "jpeg";
   }
 
+  std::string NormalizeQoSReliability(const std::string & value) const
+  {
+    const std::string normalized = NormalizeName(value);
+    if (normalized == "besteffort") {
+      return "best_effort";
+    }
+
+    return "reliable";
+  }
+
+  rclcpp::QoS BuildPublisherQoS() const
+  {
+    const std::size_t depth = static_cast<std::size_t>(std::max(1, publisher_qos_depth_));
+    rclcpp::QoS qos{rclcpp::KeepLast(depth)};
+    qos.durability_volatile();
+
+    if (NormalizeQoSReliability(publisher_qos_reliability_) == "best_effort") {
+      qos.best_effort();
+    } else {
+      qos.reliable();
+    }
+
+    return qos;
+  }
+
+  void ApplyCameraInfoYamlOverrides(const std::string & yaml_path)
+  {
+    std::ifstream stream(yaml_path);
+    if (!stream.is_open()) {
+      throw std::runtime_error("Failed to open camera_info YAML file: " + yaml_path);
+    }
+
+    bool saw_any_camera_info_value = false;
+    std::string line;
+    while (std::getline(stream, line)) {
+      if (const auto value = MatchYamlScalarValue(line, "camera_info.distortion_model")) {
+        camera_info_distortion_model_ = StripMatchingQuotes(*value);
+        saw_any_camera_info_value = true;
+        continue;
+      }
+
+      if (const auto value = MatchYamlScalarValue(line, "camera_info.d")) {
+        camera_info_d_ = ParseYamlDoubleList(*value, "camera_info.d");
+        saw_any_camera_info_value = true;
+        continue;
+      }
+
+      if (const auto value = MatchYamlScalarValue(line, "camera_info.k")) {
+        camera_info_k_ = ToFixedArray<9>(
+          ParseYamlDoubleList(*value, "camera_info.k"),
+          "camera_info.k");
+        saw_any_camera_info_value = true;
+        continue;
+      }
+
+      if (const auto value = MatchYamlScalarValue(line, "camera_info.r")) {
+        camera_info_r_ = ToFixedArray<9>(
+          ParseYamlDoubleList(*value, "camera_info.r"),
+          "camera_info.r");
+        saw_any_camera_info_value = true;
+        continue;
+      }
+
+      if (const auto value = MatchYamlScalarValue(line, "camera_info.p")) {
+        camera_info_p_ = ToFixedArray<12>(
+          ParseYamlDoubleList(*value, "camera_info.p"),
+          "camera_info.p");
+        saw_any_camera_info_value = true;
+        continue;
+      }
+
+      if (const auto value = MatchYamlScalarValue(line, "camera_info.binning_x")) {
+        camera_info_binning_x_ = static_cast<std::uint32_t>(
+          ParseYamlNonNegativeInt(*value, "camera_info.binning_x"));
+        saw_any_camera_info_value = true;
+        continue;
+      }
+
+      if (const auto value = MatchYamlScalarValue(line, "camera_info.binning_y")) {
+        camera_info_binning_y_ = static_cast<std::uint32_t>(
+          ParseYamlNonNegativeInt(*value, "camera_info.binning_y"));
+        saw_any_camera_info_value = true;
+        continue;
+      }
+
+      if (const auto value = MatchYamlScalarValue(line, "camera_info.roi.x_offset")) {
+        camera_info_roi_x_offset_ = static_cast<std::uint32_t>(
+          ParseYamlNonNegativeInt(*value, "camera_info.roi.x_offset"));
+        saw_any_camera_info_value = true;
+        continue;
+      }
+
+      if (const auto value = MatchYamlScalarValue(line, "camera_info.roi.y_offset")) {
+        camera_info_roi_y_offset_ = static_cast<std::uint32_t>(
+          ParseYamlNonNegativeInt(*value, "camera_info.roi.y_offset"));
+        saw_any_camera_info_value = true;
+        continue;
+      }
+
+      if (const auto value = MatchYamlScalarValue(line, "camera_info.roi.height")) {
+        camera_info_roi_height_ = static_cast<std::uint32_t>(
+          ParseYamlNonNegativeInt(*value, "camera_info.roi.height"));
+        saw_any_camera_info_value = true;
+        continue;
+      }
+
+      if (const auto value = MatchYamlScalarValue(line, "camera_info.roi.width")) {
+        camera_info_roi_width_ = static_cast<std::uint32_t>(
+          ParseYamlNonNegativeInt(*value, "camera_info.roi.width"));
+        saw_any_camera_info_value = true;
+        continue;
+      }
+
+      if (const auto value = MatchYamlScalarValue(line, "camera_info.roi.do_rectify")) {
+        camera_info_roi_do_rectify_ = ParseYamlBool(*value, "camera_info.roi.do_rectify");
+        saw_any_camera_info_value = true;
+        continue;
+      }
+    }
+
+    if (!saw_any_camera_info_value) {
+      throw std::runtime_error(
+        "Camera info YAML file did not contain any 'camera_info.*' entries: " + yaml_path);
+    }
+
+    RCLCPP_INFO(
+      get_logger(),
+      "Loaded camera_info calibration overrides from '%s'.",
+      yaml_path.c_str());
+  }
+
   std::vector<int> CompressionParameters() const
   {
     if (rgb_compression_format_ == "png") {
@@ -1312,6 +1660,42 @@ private:
     msg.format = CompressedFormatString();
     msg.data = std::move(compressed_buffer);
     return msg;
+  }
+
+  rclcpp::Time ResolveHeaderStamp(
+    const ImagePtr & image,
+    const rclcpp::Time & fallback_stamp)
+  {
+    if (!use_camera_timestamp_in_header_ || camera_timestamp_header_disabled_due_to_instability_) {
+      return fallback_stamp;
+    }
+
+    const std::uint64_t camera_timestamp_ns = image->GetTimeStamp();
+    if (camera_timestamp_ns == 0U ||
+      camera_timestamp_ns > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+    {
+      return fallback_stamp;
+    }
+
+    const std::int64_t camera_timestamp = static_cast<std::int64_t>(camera_timestamp_ns);
+    const std::int64_t fallback_ns = fallback_stamp.nanoseconds();
+
+    if (!camera_timestamp_alignment_initialized_) {
+      camera_timestamp_alignment_initialized_ = true;
+      header_stamp_offset_ns_ = fallback_ns - camera_timestamp;
+    } else if (camera_timestamp_ns < last_camera_timestamp_ns_) {
+      camera_timestamp_header_disabled_due_to_instability_ = true;
+      RCLCPP_WARN(
+        get_logger(),
+        "Camera timestamp moved backwards. Falling back to host receive time for topic headers. "
+        "The original device timestamp remains in image_raw/metadata.camera_timestamp_ns.");
+      return fallback_stamp;
+    }
+
+    last_camera_timestamp_ns_ = camera_timestamp_ns;
+    return rclcpp::Time(
+      header_stamp_offset_ns_ + camera_timestamp,
+      get_clock()->get_clock_type());
   }
 
   flir_spinnaker_camera::msg::FlirMetadata BuildMetadataMessage(
@@ -1386,7 +1770,8 @@ private:
           continue;
         }
 
-        const rclcpp::Time stamp = now();
+        const rclcpp::Time host_stamp = now();
+        const rclcpp::Time stamp = ResolveHeaderStamp(image, host_stamp);
 
         if (publish_raw_ || publish_camera_info_ || publish_metadata_) {
           const auto raw_spec = RawOutputSpecForPixelFormat(image->GetPixelFormat());
@@ -1503,10 +1888,14 @@ private:
   bool publish_camera_info_;
   bool publish_metadata_;
   bool publish_rgb_compressed_;
+  std::string publisher_qos_reliability_;
+  int publisher_qos_depth_;
   std::string frame_id_;
   std::string camera_serial_;
   int camera_index_;
   int acquisition_timeout_ms_;
+  bool use_camera_timestamp_in_header_;
+  std::string camera_info_yaml_path_;
   bool auto_pixel_format_;
   std::string pixel_format_;
   std::string buffer_handling_mode_;
@@ -1514,6 +1903,10 @@ private:
   std::string rgb_compression_format_;
   int rgb_jpeg_quality_;
   int rgb_png_compression_level_;
+  bool camera_timestamp_alignment_initialized_ = false;
+  bool camera_timestamp_header_disabled_due_to_instability_ = false;
+  std::uint64_t last_camera_timestamp_ns_ = 0U;
+  std::int64_t header_stamp_offset_ns_ = 0;
   std::string camera_info_distortion_model_;
   std::vector<double> camera_info_d_;
   std::array<double, 9> camera_info_k_{};
