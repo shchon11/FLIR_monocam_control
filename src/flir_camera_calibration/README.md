@@ -1,40 +1,38 @@
 # flir_camera_calibration
 
-ROS 2 Humble calibration helper for the FLIR workspace.
+체스보드 기반 캘리브레이션을 위한 보조 패키지다.
+
+## 역할
+
+- `/image_rgb/compressed`를 받아 체스보드 검출
+- 검출된 보드를 preview로 보여주고 annotated compressed 토픽 퍼블리시
+- 샘플을 모아 calibration YAML 저장
+
+## 입력과 출력
 
 입력:
 
-- `/image_rgb/compressed` 구독
+- `/image_rgb/compressed`
 
 출력:
 
-- 체스보드가 검출되면 코너를 그려 넣은 `/calibration/image_annotated/compressed`
+- `/calibration/image_annotated/compressed`
+- `calibration/flir_camera_info.yaml`
+- `calibration/captures/` 내부 캡처 이미지
 
-기능:
+## 조작 키
 
-- OpenCV로 compressed JPEG/PNG 디코드
-- 구독된 프레임마다 바로 저해상도 preview에서 체스보드 검출 및 코너 오버레이
-- OpenCV 창에서 `space`를 눌러 샘플 캡처
-- `c`를 눌러 `cv::calibrateCamera()` 실행 후 YAML 저장
-- `r`로 캡처 리셋
-- `q` 또는 `Esc`로 종료
+- `space`: 현재 보드 샘플 캡처
+- `c`: `cv::calibrateCamera()` 실행 후 YAML 저장
+- `r`: 샘플 초기화
+- `q` 또는 `Esc`: 종료
 
-중요:
+## 동작 방식
 
-- `board_cols`, `board_rows`는 체스보드의 `inner corners` 기준
-- live preview는 성능을 위해 downscale + FAST_CHECK를 쓰고, `space` 캡처 시에는 원본 full-resolution에서 다시 정밀 검출
-- preview는 별도 FPS 제한 없이 입력 compressed 이미지가 들어오는대로 바로 갱신됨
-- 기본 live preview 검출 폭은 `640px`이고, 보드가 너무 작게 보이면 `preview_max_width`를 올리면 됨
-- 캘리브레이션 저장 파일은 FLIR 카메라 노드의 `camera_info.*` 파라미터 형태로 생성됨
-- FLIR 카메라 노드에서 `camera_info.yaml_path:=<saved_yaml>` 로 주면 저장된 결과가 `/camera_info`에 그대로 반영됨
-- 원본 캡처 이미지는 `sample_image_dir`가 비어 있지 않으면 같이 저장되고, 기본 `calibration/captures/` 이미지는 gitignore 처리됨
-
-## 빌드
-
-```bash
-source scripts/setup_flir_env.bash
-colcon build --symlink-install --packages-select flir_camera_calibration
-```
+- preview는 입력 프레임이 들어오는대로 바로 갱신된다.
+- live preview 검출은 성능 때문에 downscale + FAST_CHECK를 쓴다.
+- 실제 캡처 시에는 원본 full-resolution에서 다시 정밀 검출한다.
+- 기본 preview 검출 폭은 `640px`이다.
 
 ## 실행
 
@@ -52,7 +50,17 @@ ros2 launch flir_camera_calibration calibration.launch.py \
   square_size_m:=0.024
 ```
 
-## 기본 저장 위치
+## 결과 활용
 
-- calibration YAML: `calibration/flir_camera_info.yaml`
-- 캡처 이미지: `calibration/captures/`
+저장된 `calibration/flir_camera_info.yaml`은 `flir_spinnaker_camera`의 `camera_info.yaml_path`에 바로 연결할 수 있다.
+
+```bash
+ros2 launch flir_spinnaker_camera flir_camera.launch.py \
+  camera_info_yaml_path:=calibration/flir_camera_info.yaml
+```
+
+## 메모
+
+- `board_cols`, `board_rows`는 square 개수가 아니라 `inner corners` 기준이다.
+- `sample_image_dir`가 비어 있지 않으면 캡처 원본도 저장된다.
+- 기본 `calibration/captures/` 이미지는 gitignore 처리되어 있다.

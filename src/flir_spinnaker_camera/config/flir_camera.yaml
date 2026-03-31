@@ -43,7 +43,7 @@ flir_camera:
     # - 즉 packed 포맷의 이득은 주로 camera->PC 링크에서 생기고,
     #   ros2 topic bw /image_raw 에서는 그대로 보이지 않을 수 있습니다.
     auto_pixel_format: false
-    pixel_format: "BayerRG8"
+    pixel_format: "BayerRG12p"
     # OldestFirst: 쌓인 프레임을 순서대로 처리. 끊김은 줄 수 있지만 지연이 늘 수 있음.
     # NewestOnly : 오래된 프레임을 버리고 최신 프레임 위주로 처리. 지연은 적지만 점프처럼 보일 수 있음.
     buffer_handling_mode: "OldestFirst"
@@ -123,9 +123,9 @@ flir_camera:
     # Acquisition / FPS
     # --------------------------------------------------------------------------
     # Enables manual frame-rate control.
-    camera.AcquisitionFrameRateEnable: true
+    camera.AcquisitionFrameRateEnable: false
     # Target frame rate in Hz.
-    camera.AcquisitionFrameRate: 30.0
+    # camera.AcquisitionFrameRate: 30.0
     # Multi-frame / burst related controls if you need them:
     # camera.AcquisitionFrameCount: 1
     # camera.AcquisitionBurstFrameCount: 1
@@ -181,8 +181,8 @@ flir_camera:
     # ROI / resolution / sensor-side reduction
     # --------------------------------------------------------------------------
     # Width and height of the image in pixels.
-    # camera.Width: 1936
-    # camera.Height: 1464
+    camera.Width: 640
+    camera.Height: 480
     # ROI origin in pixels.
     # camera.OffsetX: 0
     # camera.OffsetY: 0
