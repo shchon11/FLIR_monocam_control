@@ -52,11 +52,11 @@ class FlirCameraUndistortViewerNode : public rclcpp::Node
 public:
   FlirCameraUndistortViewerNode()
   : Node("flir_camera_undistort_viewer"),
-    input_topic_(declare_parameter<std::string>("input_topic", "/image_rgb/compressed")),
-    camera_info_topic_(declare_parameter<std::string>("camera_info_topic", "/camera_info")),
+    input_topic_(declare_parameter<std::string>("input_topic", "image_rgb/compressed")),
+    camera_info_topic_(declare_parameter<std::string>("camera_info_topic", "camera_info")),
     output_topic_(declare_parameter<std::string>(
         "output_topic",
-        "/image_rgb/undistorted/compressed")),
+        "image_rgb/undistorted/compressed")),
     output_jpeg_quality_(declare_parameter<int>("output_jpeg_quality", 80)),
     output_png_compression_level_(declare_parameter<int>("output_png_compression_level", 3)),
     input_qos_reliability_(declare_parameter<std::string>("input_qos_reliability", "best_effort")),

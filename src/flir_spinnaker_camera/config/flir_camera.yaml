@@ -1,4 +1,4 @@
-flir_camera:
+/**:
   ros__parameters:
     # --------------------------------------------------------------------------
     # Base node configuration
@@ -15,9 +15,9 @@ flir_camera:
     # true면 카메라 frame timestamp를 ROS 시간축에 맞춰 쓰려고 시도하지만,
     # 일부 GigE/PTP 환경에서는 카메라 timestamp가 비단조로 보여 header가 불안정할 수 있음.
     use_camera_timestamp_in_header: false
-    # 비어 있지 않으면 flir_camera_calibration 이 저장한 YAML에서 camera_info.* 값을 읽어
-    # /camera_info 퍼블리시에 바로 반영합니다.
-    camera_info.yaml_path: "calibration/flir_camera_info.yaml"
+    # 개별 카메라 intrinsic YAML 경로.
+    # 멀티카메라에서는 보통 flir_cameras.yaml 에서 카메라별로 override 합니다.
+    camera_info.yaml_path: ""
 
     # Pixel format / output setup
     # - auto_pixel_format=true:
@@ -181,8 +181,8 @@ flir_camera:
     # ROI / resolution / sensor-side reduction
     # --------------------------------------------------------------------------
     # Width and height of the image in pixels.
-    # camera.Width: 1936
-    # camera.Height: 1464
+    camera.Width: 1936
+    camera.Height: 1464
     # ROI origin in pixels.
     # camera.OffsetX: 0
     # camera.OffsetY: 0
@@ -190,8 +190,8 @@ flir_camera:
     # camera.BinningHorizontal: 1
     # camera.BinningVertical: 1
     # Resolution reduction by skipping pixels.
-    # camera.DecimationHorizontal: 1
-    # camera.DecimationVertical: 1
+    camera.DecimationHorizontal: 1
+    camera.DecimationVertical: 1
 
     # --------------------------------------------------------------------------
     # Trigger / external I/O

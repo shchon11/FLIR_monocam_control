@@ -468,6 +468,7 @@ public:
     publisher_qos_depth_(declare_parameter<int>("publisher_qos_depth", 20)),
     frame_id_(declare_parameter<std::string>("frame_id", "flir_camera_optical_frame")),
     camera_serial_(declare_parameter<std::string>("camera_serial", "")),
+    selected_camera_serial_(declare_parameter<std::string>("selected_camera_serial", "")),
     camera_index_(declare_parameter<int>("camera_index", 0)),
     acquisition_timeout_ms_(declare_parameter<int>("acquisition_timeout_ms", 1000)),
     use_camera_timestamp_in_header_(declare_parameter<bool>("use_camera_timestamp_in_header", false)),
@@ -1220,6 +1221,8 @@ private:
 
     const std::string selected_serial = SafeNodeString(tl_node_map, "DeviceSerialNumber");
     const std::string selected_model = SafeNodeString(tl_node_map, "DeviceModelName");
+    selected_camera_serial_ = selected_serial;
+    set_parameter(rclcpp::Parameter("selected_camera_serial", selected_camera_serial_));
     RCLCPP_INFO(
       get_logger(),
       "Using camera model='%s' serial='%s'",
@@ -1892,6 +1895,7 @@ private:
   int publisher_qos_depth_;
   std::string frame_id_;
   std::string camera_serial_;
+  std::string selected_camera_serial_;
   int camera_index_;
   int acquisition_timeout_ms_;
   bool use_camera_timestamp_in_header_;

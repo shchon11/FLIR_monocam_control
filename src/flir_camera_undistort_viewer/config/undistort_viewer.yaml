@@ -1,8 +1,8 @@
-flir_camera_undistort_viewer:
+/**:
   ros__parameters:
-    input_topic: "/image_rgb/compressed"
-    camera_info_topic: "/camera_info"
-    output_topic: "/image_rgb/undistorted/compressed"
+    input_topic: "image_rgb/compressed"
+    camera_info_topic: "camera_info"
+    output_topic: "image_rgb/undistorted/compressed"
 
     output_jpeg_quality: 80
     output_png_compression_level: 3

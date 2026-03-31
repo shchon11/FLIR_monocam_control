@@ -1,0 +1,24 @@
+flir_system:
+  shared_camera_params_file: "flir_camera.yaml"
+  extrinsics_file: "calibration/extrinsics/rig.yaml"
+  publish_extrinsics: true
+  shared_parameter_overrides:
+    camera.AcquisitionFrameRateEnable: true
+    camera.AcquisitionFrameRate: 6.0
+
+  cameras:
+    camera0:
+      enabled: true
+      namespace: "camera0"
+      serial: "24293695"
+      frame_id: "camera0_optical_frame"
+      intrinsic_file: "calibration/intrinsics/24293695.yaml"
+      parameter_overrides: {}
+
+    camera1:
+      enabled: true
+      namespace: "camera1"
+      serial: "24401042"
+      frame_id: "camera1_optical_frame"
+      intrinsic_file: ""
+      parameter_overrides: {}

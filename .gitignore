@@ -1,7 +1,8 @@
 build/
 install/
 log/
-
+.codex
+.omx
 # Python cache / bytecode
 __pycache__/
 *.pyc
@@ -25,3 +26,4 @@ compile_commands.json
 
 # Calibration artifacts
 calibration/captures/
+calibration/intrinsics/*.yaml

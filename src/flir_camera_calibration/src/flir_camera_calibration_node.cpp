@@ -14,6 +14,7 @@
 #include <iomanip>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -21,6 +22,7 @@
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp/parameter_client.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
 
 namespace
@@ -77,10 +79,11 @@ class FlirCameraCalibrationNode : public rclcpp::Node
 public:
   FlirCameraCalibrationNode()
   : Node("flir_camera_calibration"),
-    input_topic_(declare_parameter<std::string>("input_topic", "/image_rgb/compressed")),
+    input_topic_(declare_parameter<std::string>("input_topic", "image_rgb/compressed")),
     annotated_output_topic_(declare_parameter<std::string>(
         "annotated_output_topic",
-        "/calibration/image_annotated/compressed")),
+        "calibration/image_annotated/compressed")),
+    camera_node_name_(declare_parameter<std::string>("camera_node_name", "flir_camera")),
     output_yaml_path_(declare_parameter<std::string>(
         "output_yaml_path",
         "calibration/flir_camera_info.yaml")),
@@ -519,13 +522,20 @@ private:
       rotation_vectors,
       translation_vectors);
 
+    const std::string resolved_output_yaml_path = ResolveCalibrationOutputPath();
+
     try {
-      WriteCalibrationYaml(camera_matrix, distortion_coefficients, rms, mean_error);
+      WriteCalibrationYaml(
+        resolved_output_yaml_path,
+        camera_matrix,
+        distortion_coefficients,
+        rms,
+        mean_error);
     } catch (const std::exception & exception) {
       RCLCPP_ERROR(
         get_logger(),
         "Calibration succeeded but saving '%s' failed: %s",
-        output_yaml_path_.c_str(),
+        resolved_output_yaml_path.c_str(),
         exception.what());
       return;
     }
@@ -535,7 +545,7 @@ private:
       "Calibration finished with RMS %.6f and mean reprojection error %.6f. Saved to '%s'.",
       rms,
       mean_error,
-      output_yaml_path_.c_str());
+      resolved_output_yaml_path.c_str());
   }
 
   double ComputeMeanReprojectionError(
@@ -599,13 +609,93 @@ private:
     return stream.str();
   }
 
+  std::string CameraNodeFullyQualifiedName() const
+  {
+    const std::string node_name = camera_node_name_.empty() ? "flir_camera" : camera_node_name_;
+    const std::string node_namespace = get_namespace();
+    if (node_namespace.empty() || node_namespace == "/") {
+      return "/" + node_name;
+    }
+
+    if (node_namespace.back() == '/') {
+      return node_namespace + node_name;
+    }
+
+    return node_namespace + "/" + node_name;
+  }
+
+  std::optional<std::string> QueryCameraSerialFromCameraNode()
+  {
+    if (camera_serial_query_attempted_) {
+      if (resolved_camera_serial_.empty()) {
+        return std::nullopt;
+      }
+      return resolved_camera_serial_;
+    }
+
+    camera_serial_query_attempted_ = true;
+    try {
+      auto parameter_client = std::make_shared<rclcpp::SyncParametersClient>(
+        shared_from_this(),
+        CameraNodeFullyQualifiedName());
+
+      if (!parameter_client->wait_for_service(std::chrono::seconds(1))) {
+        return std::nullopt;
+      }
+
+      const auto parameters = parameter_client->get_parameters({"selected_camera_serial", "camera_serial"});
+      for (const auto & parameter : parameters) {
+        if (parameter.get_type() == rclcpp::ParameterType::PARAMETER_STRING &&
+          !parameter.as_string().empty())
+        {
+          resolved_camera_serial_ = parameter.as_string();
+          return resolved_camera_serial_;
+        }
+      }
+    } catch (const std::exception & exception) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(),
+        *get_clock(),
+        5000,
+        "Failed to query camera serial from '%s': %s",
+        CameraNodeFullyQualifiedName().c_str(),
+        exception.what());
+    }
+
+    return std::nullopt;
+  }
+
+  std::string ResolveCalibrationOutputPath()
+  {
+    const auto camera_serial = QueryCameraSerialFromCameraNode();
+    if (!camera_serial.has_value()) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(),
+        *get_clock(),
+        5000,
+        "Camera serial was not available from '%s'. Falling back to '%s'.",
+        CameraNodeFullyQualifiedName().c_str(),
+        output_yaml_path_.c_str());
+      return output_yaml_path_;
+    }
+
+    const std::filesystem::path configured_output_path(output_yaml_path_);
+    const std::filesystem::path output_directory =
+      configured_output_path.has_parent_path() ? configured_output_path.parent_path() : std::filesystem::path(".");
+    const std::string extension = configured_output_path.has_extension() ?
+      configured_output_path.extension().string() :
+      ".yaml";
+    return (output_directory / (camera_serial.value() + extension)).string();
+  }
+
   void WriteCalibrationYaml(
+    const std::string & output_yaml_path,
     const cv::Mat & camera_matrix,
     const cv::Mat & distortion_coefficients,
     double rms,
     double mean_error) const
   {
-    const std::filesystem::path output_path(output_yaml_path_);
+    const std::filesystem::path output_path(output_yaml_path);
     if (output_path.has_parent_path()) {
       std::filesystem::create_directories(output_path.parent_path());
     }
@@ -625,7 +715,7 @@ private:
 
     std::ofstream stream(output_path.string());
     if (!stream.is_open()) {
-      throw std::runtime_error("Failed to open calibration output file: " + output_yaml_path_);
+      throw std::runtime_error("Failed to open calibration output file: " + output_yaml_path);
     }
 
     stream << "flir_camera:\n";
@@ -693,6 +783,7 @@ private:
 
   std::string input_topic_;
   std::string annotated_output_topic_;
+  std::string camera_node_name_;
   std::string output_yaml_path_;
   std::string sample_image_dir_;
   int board_cols_;
@@ -714,6 +805,8 @@ private:
   std::vector<cv::Point3f> base_object_points_;
   std::vector<std::vector<cv::Point2f>> captured_image_points_;
   std::vector<std::vector<cv::Point3f>> captured_object_points_;
+  bool camera_serial_query_attempted_{false};
+  std::string resolved_camera_serial_;
 
   std::mutex latest_frame_mutex_;
   LatestFrameState latest_frame_;

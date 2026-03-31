@@ -1,8 +1,11 @@
-flir_camera_calibration:
+/**:
   ros__parameters:
-    input_topic: "/image_rgb/compressed"
-    annotated_output_topic: "/calibration/image_annotated/compressed"
-    output_yaml_path: "calibration/flir_camera_info.yaml"
+    input_topic: "image_rgb/compressed"
+    annotated_output_topic: "calibration/image_annotated/compressed"
+    # The parent directory and extension are taken from this path.
+    # When the sibling flir_camera node exposes its selected serial, the actual
+    # saved file becomes calibration/intrinsics/<serial>.yaml.
+    output_yaml_path: "calibration/intrinsics/flir_camera_info.yaml"
     sample_image_dir: "calibration/captures"
 
     # Chessboard inner-corner count, not square count.

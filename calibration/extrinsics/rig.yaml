@@ -1,0 +1,15 @@
+extrinsics:
+  rig_frame: "camera_rig"
+
+  cameras:
+    camera0:
+      parent: "camera_rig"
+      child: "camera0_optical_frame"
+      translation_xyz: [0.0, 0.0, 0.0]
+      rotation_rpy: [0.0, 0.0, 0.0]
+
+    camera1:
+      parent: "camera_rig"
+      child: "camera1_optical_frame"
+      translation_xyz: [0.0, 0.0, 0.0]
+      rotation_rpy: [0.0, 0.0, 0.0]
