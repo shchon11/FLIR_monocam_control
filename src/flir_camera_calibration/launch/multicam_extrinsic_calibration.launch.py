@@ -178,7 +178,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "reference_camera",
-                default_value="camera0",
+                default_value="camera_center",
                 description="Reference camera name, namespace, or serial. The rig frame coincides with it.",
             ),
             DeclareLaunchArgument(

@@ -346,6 +346,7 @@ def _build_camera_nodes(context):
     params_file = LaunchConfiguration("params_file").perform(context)
     cameras_file = LaunchConfiguration("cameras_file").perform(context)
     camera_info_yaml_path = LaunchConfiguration("camera_info_yaml_path").perform(context)
+    camera_start_stagger = float(LaunchConfiguration("camera_start_stagger").perform(context))
     master_start_delay = float(LaunchConfiguration("hardware_trigger_master_start_delay").perform(context))
     ptp_action_sender_start_delay = float(
         LaunchConfiguration("ptp_action_sender_start_delay").perform(context)
@@ -384,6 +385,12 @@ def _build_camera_nodes(context):
     cameras = _parse_cameras_file(cameras_file)
     shared_parameters = _load_ros_parameters(params_file, "flir_camera")
 
+    ptp_action_role_override = LaunchConfiguration("ptp_action_role_override").perform(context).strip()
+    if ptp_action_role_override:
+        for camera in cameras:
+            camera["ptp_action_role"] = ptp_action_role_override
+            camera.pop("action_role", None)
+
     nodes = []
     if ptp4l_process is not None:
         nodes.append(ptp4l_process)
@@ -405,31 +412,36 @@ def _build_camera_nodes(context):
             )
         )
 
-    master_nodes = []
-    ptp_action_sender_nodes = []
-    for camera in cameras:
+    # A GigE Vision camera grants Read/Write access to one controller at a time.
+    # Every camera node runs its own Spinnaker system and enumerates all cameras,
+    # so starting them at once makes their Init() calls race for that access and
+    # the losers die with "Unable to set DeviceAccessStatus to Read/Write" (-1005).
+    # Staggering the starts keeps only one Init() in flight at a time. Senders and
+    # masters stay last so the receivers are armed before they fire.
+    ordered_cameras = (
+        [c for c in cameras if not _is_ptp_action_sender(c) and not _is_master(c)]
+        + [c for c in cameras if _is_master(c) and not _is_ptp_action_sender(c)]
+        + [c for c in cameras if _is_ptp_action_sender(c)]
+    )
+
+    for index, camera in enumerate(ordered_cameras):
         node = _build_camera_node(
             camera,
             shared_parameters,
             camera_info_yaml_path,
             force_ip_in_camera_nodes,
         )
+
+        delay = index * camera_start_stagger
         if _is_ptp_action_sender(camera):
-            ptp_action_sender_nodes.append(node)
+            delay += ptp_action_sender_start_delay
         elif _is_master(camera):
-            master_nodes.append(node)
+            delay += master_start_delay
+
+        if delay > 0.0:
+            nodes.append(TimerAction(period=delay, actions=[node]))
         else:
             nodes.append(node)
-
-    if master_nodes and master_start_delay > 0.0:
-        nodes.append(TimerAction(period=master_start_delay, actions=master_nodes))
-    else:
-        nodes.extend(master_nodes)
-
-    if ptp_action_sender_nodes and ptp_action_sender_start_delay > 0.0:
-        nodes.append(TimerAction(period=ptp_action_sender_start_delay, actions=ptp_action_sender_nodes))
-    else:
-        nodes.extend(ptp_action_sender_nodes)
 
     return nodes
 
@@ -466,7 +478,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "auto_update_force_ip_base",
-                default_value="192.168.1.206",
+                default_value="192.168.1.1",
                 description="Optional first IPv4 address used to assign sequential force_ip_address entries.",
             ),
             DeclareLaunchArgument(
@@ -501,8 +513,12 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "auto_apply_force_ip",
-                default_value="true",
-                description="Apply inventory ForceIP entries sequentially before camera nodes start.",
+                default_value="false",
+                description=(
+                    "Apply inventory ForceIP entries sequentially before camera nodes start. "
+                    "Off by default: the cameras already hold their static addresses. Set true "
+                    "to re-assign them, e.g. after a camera comes up link-local."
+                ),
             ),
             DeclareLaunchArgument(
                 "auto_force_ip_wait_after_ms",
@@ -525,9 +541,28 @@ def generate_launch_description():
                 description="Allow individual camera nodes to run ForceIP. Off by default to avoid parallel ForceIP.",
             ),
             DeclareLaunchArgument(
+                "camera_start_stagger",
+                default_value="0.0",
+                description=(
+                    "Seconds between consecutive camera node starts. A GigE camera grants "
+                    "Read/Write access to one controller at a time, so simultaneous starts "
+                    "contend for it; the nodes retry Init() and recover on their own, which is "
+                    "why this is 0 by default. Raise it to serialize the bring-up instead."
+                ),
+            ),
+            DeclareLaunchArgument(
                 "hardware_trigger_master_start_delay",
                 default_value="1.0",
                 description="Seconds to delay hardware-trigger master nodes so slave nodes can arm first.",
+            ),
+            DeclareLaunchArgument(
+                "ptp_action_role_override",
+                default_value="",
+                description=(
+                    "When set, replaces every camera's ptp_action_role from cameras_file. "
+                    "Use 'none' to run the cameras free-running with no PTP action trigger, "
+                    "which also removes the PTP sync requirement."
+                ),
             ),
             DeclareLaunchArgument(
                 "ptp_action_sender_start_delay",
@@ -536,8 +571,12 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "ptp_master_interface",
-                default_value="",
-                description="Optional NIC name. When set, launch starts ptp4l as the PC PTP master.",
+                default_value="enp3s0f1",
+                description=(
+                    "Camera NIC. Launch starts ptp4l on it so the PC is the PTP grandmaster; "
+                    "the cameras are SlaveOnly and cannot elect one among themselves. "
+                    "Set to an empty string to run PTP master separately."
+                ),
             ),
             DeclareLaunchArgument(
                 "ptp4l_binary",
@@ -547,7 +586,12 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "ptp4l_timestamping",
                 default_value="software",
-                description="ptp4l timestamping mode: software, hardware, legacy, or default.",
+                description=(
+                    "ptp4l timestamping mode: software, hardware, legacy, or default. "
+                    "Software is what the cameras actually reach 'Slave' on here. The NIC "
+                    "advertises PHC support, but hardware mode left them in 'Listening', so "
+                    "only switch after checking the ptp4l lines in the launch log."
+                ),
             ),
             DeclareLaunchArgument(
                 "ptp4l_uds_address",

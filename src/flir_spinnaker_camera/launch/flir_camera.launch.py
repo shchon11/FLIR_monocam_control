@@ -199,7 +199,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "force_ip_address",
                 default_value="",
-                description="Optional GigE ForceIP target address, e.g. 192.168.1.206.",
+                description="Optional GigE ForceIP target address, e.g. 192.168.1.1.",
             ),
             DeclareLaunchArgument(
                 "force_ip_subnet_mask",

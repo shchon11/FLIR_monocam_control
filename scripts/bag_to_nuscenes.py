@@ -148,7 +148,7 @@ def parse_args() -> argparse.Namespace:
         metavar="CAMERA=CHANNEL",
         help=(
             "Map a ROS camera namespace to a nuScenes channel, e.g. "
-            "camera0=CAM_FRONT. Can be repeated. Defaults to CAM_<CAMERA>."
+            "camera_center=CAM_FRONT. Can be repeated. Defaults to CAM_<CAMERA>."
         ),
     )
     parser.add_argument(
@@ -292,6 +292,9 @@ def stream_id_for(camera_id: str, kind: str, needs_suffix: bool) -> str:
 
 def default_channel(camera_id: str) -> str:
     normalized = re.sub(r"[^A-Za-z0-9]+", "_", camera_id).strip("_").upper()
+    # Rig namespaces are position-named (camera_front_right), and the CAM_ prefix
+    # already says it is a camera: CAM_FRONT_RIGHT, not CAM_CAMERA_FRONT_RIGHT.
+    normalized = re.sub(r"^CAMERA_", "", normalized)
     return f"CAM_{normalized or 'CAMERA'}"
 
 

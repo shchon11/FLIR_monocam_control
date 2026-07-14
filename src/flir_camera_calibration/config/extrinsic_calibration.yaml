@@ -1,10 +1,20 @@
 flir_camera_extrinsic_calibration:
   ros__parameters:
-    camera_namespaces: ["camera0", "camera1"]
-    camera_names: ["camera0", "camera1"]
-    camera_serials: ["24100001", "24100002"]
-    camera_frame_ids: ["camera0_optical_frame", "camera1_optical_frame"]
-    reference_camera: "camera0"
+    # multicam_extrinsic_calibration.launch.py overrides these from the camera
+    # inventory YAML. They only apply when the node runs standalone.
+    camera_namespaces: ["camera_center", "camera_front_right", "camera_front_left",
+                        "camera_side_right_1", "camera_side_right_2",
+                        "camera_side_left_1", "camera_side_left_2", "camera_rear"]
+    camera_names: ["camera_center", "camera_front_right", "camera_front_left",
+                   "camera_side_right_1", "camera_side_right_2",
+                   "camera_side_left_1", "camera_side_left_2", "camera_rear"]
+    camera_serials: ["25415248", "26076473", "26076477", "25415254",
+                     "26076472", "25415250", "25415249", "26076003"]
+    camera_frame_ids: ["camera_center_optical_frame", "camera_front_right_optical_frame",
+                       "camera_front_left_optical_frame", "camera_side_right_1_optical_frame",
+                       "camera_side_right_2_optical_frame", "camera_side_left_1_optical_frame",
+                       "camera_side_left_2_optical_frame", "camera_rear_optical_frame"]
+    reference_camera: "camera_center"
     reference_frame: "flir_rig_frame"
 
     image_topic: "image_rgb/compressed"

@@ -141,7 +141,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "camera_name",
-                default_value="camera0",
+                default_value="camera_center",
                 description="Logical camera name to calibrate. Ignored when camera_serial is set.",
             ),
             DeclareLaunchArgument(

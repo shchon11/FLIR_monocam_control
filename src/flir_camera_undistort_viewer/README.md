@@ -54,10 +54,10 @@ ros2 launch flir_camera_undistort_viewer multicam_undistort_viewer.launch.py
 
 각 viewer는 namespace 내부의 relative topic을 사용한다.
 
-- `/camera0/image_rgb/compressed` + `/camera0/camera_info`
-- `/camera0/image_rgb/undistorted/compressed`
-- `/camera1/image_rgb/compressed` + `/camera1/camera_info`
-- `/camera1/image_rgb/undistorted/compressed`
+- `/camera_center/image_rgb/compressed` + `/camera_center/camera_info`
+- `/camera_center/image_rgb/undistorted/compressed`
+- `/camera_front_right/image_rgb/compressed` + `/camera_front_right/camera_info`
+- `/camera_front_right/image_rgb/undistorted/compressed`
 
 ## 메모
 

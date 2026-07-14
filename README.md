@@ -80,7 +80,7 @@ ros2 launch flir_camera_calibration calibration.launch.py
 카메라별 intrinsic calibration:
 
 ```bash
-ros2 launch flir_camera_calibration multicam_calibration.launch.py camera_name:=camera0
+ros2 launch flir_camera_calibration multicam_calibration.launch.py camera_name:=camera_center
 ```
 
 왜곡 보정 스트림:
@@ -159,10 +159,10 @@ scripts/setup_camera_nic.bash --interface enp5s0 --host-cidr 192.168.1.10/24
 
 멀티캠에서는 namespace가 붙는다.
 
-- `/camera0/image_rgb/compressed`
-- `/camera0/camera_info`
-- `/camera1/image_rgb/compressed`
-- `/camera1/camera_info`
+- `/camera_center/image_rgb/compressed`
+- `/camera_center/camera_info`
+- `/camera_front_right/image_rgb/compressed`
+- `/camera_front_right/camera_info`
 
 `/image_raw`는 raw/mono/Bayer 경로이고, `/image_rgb/compressed`는 host에서 RGB로
 변환한 뒤 JPEG 또는 PNG로 압축한 결과다. 원본 장치 timestamp는
@@ -171,20 +171,37 @@ scripts/setup_camera_nic.bash --interface enp5s0 --host-cidr 192.168.1.10/24
 ## Multicam Setup
 
 멀티캠 장치 매핑은 `src/flir_spinnaker_camera/config/multicam_cameras.yaml`에서
-serial 기준으로 관리한다.
+serial 기준으로 관리한다. 현재 rig의 8대 구성:
+
+| 카메라 (namespace) | Serial | IP | MAC |
+| --- | --- | --- | --- |
+| `camera_center` | 25415248 | 192.168.1.1 | 2CDDA383CE50 |
+| `camera_front_right` | 26076473 | 192.168.1.2 | 2CDDA38DE539 |
+| `camera_front_left` | 26076477 | 192.168.1.3 | 2CDDA38DE53D |
+| `camera_side_right_1` | 25415254 | 192.168.1.4 | 2CDDA383CE56 |
+| `camera_side_right_2` | 26076472 | 192.168.1.5 | 2CDDA38DE538 |
+| `camera_side_left_1` | 25415250 | 192.168.1.6 | 2CDDA383CE52 |
+| `camera_side_left_2` | 25415249 | 192.168.1.7 | 2CDDA383CE51 |
+| `camera_rear` | 26076003 | 192.168.1.8 | 2CDDA38DE363 |
+
+`camera_center`가 PTP scheduled action의 sender이고 나머지는 receiver다.
 
 ```yaml
 flir_multicam:
   ros__parameters:
     cameras:
-      - name: camera0
-        serial: "24100001"
-        namespace: "camera0"
-        frame_id: "camera0_optical_frame"
-      - name: camera1
-        serial: "24100002"
-        namespace: "camera1"
-        frame_id: "camera1_optical_frame"
+      - name: "camera_center"
+        serial: "25415248"
+        namespace: "camera_center"
+        frame_id: "camera_center_optical_frame"
+        ptp_action_role: "sender"
+        force_ip_address: "192.168.1.1"
+      - name: "camera_front_right"
+        serial: "26076473"
+        namespace: "camera_front_right"
+        frame_id: "camera_front_right_optical_frame"
+        ptp_action_role: "receiver"
+        force_ip_address: "192.168.1.2"
 ```
 
 연결된 카메라를 감지해서 inventory YAML을 갱신하려면:
@@ -233,30 +250,36 @@ nuScenes 변환만 할 거면 compressed RGB, `camera_info`, metadata를 같이 
 ```bash
 mkdir -p bags
 
+CAMERAS=(camera_center camera_front_right camera_front_left \
+  camera_side_right_1 camera_side_right_2 \
+  camera_side_left_1 camera_side_left_2 camera_rear)
+
 ros2 bag record \
   -o bags/flir_multicam_$(date +%Y%m%d_%H%M%S) \
-  /camera0/image_rgb/compressed /camera0/camera_info /camera0/image_raw/metadata \
-  /camera1/image_rgb/compressed /camera1/camera_info /camera1/image_raw/metadata \
-  /camera2/image_rgb/compressed /camera2/camera_info /camera2/image_raw/metadata
+  $(for cam in "${CAMERAS[@]}"; do
+      echo "/$cam/image_rgb/compressed /$cam/camera_info /$cam/image_raw/metadata"
+    done)
 ```
 
-raw Bayer까지 남기려면 `/cameraN/image_raw`도 포함한다.
+raw Bayer까지 남기려면 `/<camera>/image_raw`도 포함한다.
 
 ```bash
 mkdir -p bags
 
 ros2 bag record \
   -o bags/flir_multicam_raw_rgb_$(date +%Y%m%d_%H%M%S) \
-  /camera0/image_raw /camera0/image_rgb/compressed /camera0/camera_info /camera0/image_raw/metadata \
-  /camera1/image_raw /camera1/image_rgb/compressed /camera1/camera_info /camera1/image_raw/metadata \
-  /camera2/image_raw /camera2/image_rgb/compressed /camera2/camera_info /camera2/image_raw/metadata
+  $(for cam in "${CAMERAS[@]}"; do
+      echo "/$cam/image_raw /$cam/image_rgb/compressed /$cam/camera_info /$cam/image_raw/metadata"
+    done)
 ```
 
 ## nuScenes Export
 
 기본 변환은 최신 `bags/<bag_name>`을 찾아 `nuscenes_export/<bag_name>`에 쓴다.
-bag에 `/cameraN/image_rgb/undistorted/compressed`가 있으면 우선 사용하고, 없으면
-`/cameraN/image_rgb/compressed`를 `CameraInfo`로 왜곡 보정해서 저장한다.
+bag에 `/<camera>/image_rgb/undistorted/compressed`가 있으면 우선 사용하고, 없으면
+`/<camera>/image_rgb/compressed`를 `CameraInfo`로 왜곡 보정해서 저장한다.
+namespace의 `camera_` 접두어는 채널명에서 빠진다: `camera_front_right` →
+`CAM_FRONT_RIGHT`.
 
 ```bash
 python3 scripts/bag_to_nuscenes.py --overwrite
@@ -272,8 +295,8 @@ nuScenes 표준 채널명으로 매핑:
 
 ```bash
 python3 scripts/bag_to_nuscenes.py \
-  --camera-channel camera0=CAM_FRONT \
-  --camera-channel camera1=CAM_FRONT_RIGHT \
+  --camera-channel camera_center=CAM_FRONT \
+  --camera-channel camera_rear=CAM_BACK \
   --overwrite
 ```
 
@@ -281,9 +304,11 @@ python3 scripts/bag_to_nuscenes.py \
 
 ```text
 nuscenes_export/<bag_name>/
-  samples/CAM_CAMERA0/*.jpg
-  samples/CAM_CAMERA1/*.jpg
-  samples/CAM_CAMERA2/*.jpg
+  samples/CAM_CENTER/*.jpg
+  samples/CAM_FRONT_RIGHT/*.jpg
+  samples/CAM_FRONT_LEFT/*.jpg
+  samples/CAM_SIDE_RIGHT_1/*.jpg
+  ...
   v1.0-mini/*.json
   conversion_report.json
 ```

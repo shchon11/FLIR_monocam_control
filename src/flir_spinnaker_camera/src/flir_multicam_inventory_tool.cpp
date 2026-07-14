@@ -1024,6 +1024,26 @@ int main(int argc, char ** argv)
       throw std::runtime_error("No FLIR cameras detected by Spinnaker.");
     }
 
+    // A camera stuck in firmware updater mode still answers ping and still shows
+    // up here, but it reports model 'Updater' and refuses to stream. Name it now
+    // instead of letting its node die minutes later with -1015.
+    std::size_t updater_count = 0U;
+    for (const auto & camera : detected) {
+      const bool is_updater = camera.model == "Updater" || camera.vendor.empty();
+      std::cout << "Detected serial=" << camera.serial
+                << " model='" << camera.model << "'"
+                << " ip=" << (camera.ip_address.has_value() ?
+        FormatIpv4Address(*camera.ip_address) : std::string("unknown"))
+                << (is_updater ? "   <-- UPDATER MODE: power cycle this camera" : "")
+                << "\n";
+      updater_count += is_updater ? 1U : 0U;
+    }
+    std::cout << "Detected " << detected.size() << " camera(s)";
+    if (updater_count > 0U) {
+      std::cout << ", " << updater_count << " in updater mode";
+    }
+    std::cout << ".\n";
+
     std::vector<CameraEntry> cameras = MergeDetectedCameras(
       ParseExistingCameras(options.output_path),
       detected,

@@ -36,6 +36,28 @@ if(SPINNAKER_ROOT)
   )
 endif()
 
+# SPINNAKER_ROOT must win over CMAKE_PREFIX_PATH. ROS distributions can ship a
+# vendored libSpinnaker (ros-humble-spinnaker-camera-driver installs 4.2 into
+# /opt/ros/humble/lib), and find_library searches CMAKE_PREFIX_PATH before
+# HINTS. Without this first pass the headers and the library come from
+# different SDKs, and Spinnaker fails at runtime with
+# "System instance has not been initialized [-1002]".
+if(SPINNAKER_ROOT)
+  find_path(SPINNAKER_INCLUDE_DIR
+    NAMES Spinnaker.h
+    HINTS ${_spinnaker_include_hints}
+    PATH_SUFFIXES include
+    NO_DEFAULT_PATH
+  )
+
+  find_library(SPINNAKER_LIBRARY
+    NAMES Spinnaker
+    HINTS ${_spinnaker_library_hints}
+    PATH_SUFFIXES lib lib64
+    NO_DEFAULT_PATH
+  )
+endif()
+
 find_path(SPINNAKER_INCLUDE_DIR
   NAMES Spinnaker.h
   HINTS ${_spinnaker_include_hints}
@@ -94,14 +116,21 @@ target_link_libraries(flir_multicam_inventory_tool
   ${SPINNAKER_LIBRARY}
 )
 
+# --disable-new-dtags emits DT_RPATH rather than DT_RUNPATH. Only DT_RPATH is
+# searched ahead of LD_LIBRARY_PATH, and ROS's setup.bash puts
+# /opt/ros/humble/lib (which may hold a different vendored libSpinnaker) on
+# LD_LIBRARY_PATH. Without this, SPINNAKER_LIBRARY_DIR loses at runtime even
+# when it wins at link time.
 set_target_properties(flir_spinnaker_camera_node PROPERTIES
   BUILD_RPATH ${SPINNAKER_LIBRARY_DIR}
   INSTALL_RPATH ${SPINNAKER_LIBRARY_DIR}
+  LINK_FLAGS "-Wl,--disable-new-dtags"
 )
 
 set_target_properties(flir_multicam_inventory_tool PROPERTIES
   BUILD_RPATH ${SPINNAKER_LIBRARY_DIR}
   INSTALL_RPATH ${SPINNAKER_LIBRARY_DIR}
+  LINK_FLAGS "-Wl,--disable-new-dtags"
 )
 
 ament_target_dependencies(flir_spinnaker_camera_node

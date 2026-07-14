@@ -190,11 +190,11 @@ public:
   : Node("flir_camera_extrinsic_calibration"),
     camera_namespaces_(declare_parameter<std::vector<std::string>>(
         "camera_namespaces",
-        std::vector<std::string>{"camera0", "camera1"})),
+        std::vector<std::string>{"camera_center", "camera_front_right"})),
     camera_names_(declare_parameter<std::vector<std::string>>("camera_names", std::vector<std::string>{})),
     camera_serials_(declare_parameter<std::vector<std::string>>("camera_serials", std::vector<std::string>{})),
     camera_frame_ids_(declare_parameter<std::vector<std::string>>("camera_frame_ids", std::vector<std::string>{})),
-    reference_camera_(declare_parameter<std::string>("reference_camera", "camera0")),
+    reference_camera_(declare_parameter<std::string>("reference_camera", "camera_center")),
     reference_frame_(declare_parameter<std::string>("reference_frame", "flir_rig_frame")),
     image_topic_(declare_parameter<std::string>("image_topic", "image_rgb/compressed")),
     camera_info_topic_(declare_parameter<std::string>("camera_info_topic", "camera_info")),

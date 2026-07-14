@@ -122,7 +122,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "camera_name",
                 default_value="",
-                description="Optional logical camera name such as camera0.",
+                description="Optional logical camera name such as camera_center.",
             ),
             DeclareLaunchArgument(
                 "frame_id",

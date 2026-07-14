@@ -641,6 +641,8 @@ public:
     frame_id_(declare_parameter<std::string>("frame_id", "flir_camera_optical_frame")),
     camera_serial_(declare_parameter<std::string>("camera_serial", "")),
     camera_index_(declare_parameter<int>("camera_index", 0)),
+    camera_init_max_attempts_(declare_parameter<int>("camera_init.max_attempts", 10)),
+    camera_init_retry_delay_ms_(declare_parameter<int>("camera_init.retry_delay_ms", 2000)),
     acquisition_timeout_ms_(declare_parameter<int>("acquisition_timeout_ms", 1000)),
     use_camera_timestamp_in_header_(declare_parameter<bool>("use_camera_timestamp_in_header", false)),
     camera_info_yaml_path_(declare_parameter<std::string>("camera_info.yaml_path", "")),
@@ -1587,7 +1589,14 @@ private:
       camera_ = WaitForSelectedCameraAfterForceIp();
     }
 
-    camera_->Init();
+    // A GigE Vision camera grants Read/Write access to one controller at a time.
+    // Every camera node enumerates the whole rig, so keeping the list alive holds
+    // a device handle on the seven cameras this node does not own, and a sibling
+    // node's Init() then fails with "Unable to set DeviceAccessStatus to
+    // Read/Write" (-1005). camera_ keeps its own reference, so it stays valid.
+    camera_list_.Clear();
+
+    InitializeSelectedCamera();
 
     INodeMap & node_map = camera_->GetNodeMap();
     INodeMap & stream_node_map = camera_->GetTLStreamNodeMap();
@@ -1615,6 +1624,58 @@ private:
     camera_->BeginAcquisition();
     acquisition_started_ = true;
     RCLCPP_INFO(get_logger(), "Camera acquisition started.");
+  }
+
+  // Spinnaker raises -1005 while another controller still holds the camera. That
+  // is the only Init() failure worth retrying: it clears as soon as the other
+  // holder lets go. Everything else — updater image mode, bad firmware, an
+  // unreachable device — needs a human, so retrying just buries the real message
+  // under a stack of identical warnings.
+  static bool IsRetryableInitError(const std::exception & exception)
+  {
+    const auto * spinnaker_exception = dynamic_cast<const Spinnaker::Exception *>(&exception);
+    if (spinnaker_exception == nullptr) {
+      return false;
+    }
+    return static_cast<int>(spinnaker_exception->GetError()) == -1005;
+  }
+
+  // Every camera node enumerates the whole rig, so their Init() calls contend for
+  // the single Read/Write slot each camera grants. Retry instead of taking the
+  // node down, which is what left a different camera dead on every launch.
+  void InitializeSelectedCamera()
+  {
+    const int attempts = std::max(1, camera_init_max_attempts_);
+    std::string last_error;
+
+    for (int attempt = 1; attempt <= attempts; ++attempt) {
+      try {
+        camera_->Init();
+        if (attempt > 1) {
+          RCLCPP_INFO(get_logger(), "Camera Init succeeded on attempt %d/%d.", attempt, attempts);
+        }
+        return;
+      } catch (const std::exception & exception) {
+        last_error = exception.what();
+        if (!IsRetryableInitError(exception)) {
+          throw std::runtime_error("Camera Init failed: " + last_error);
+        }
+        if (attempt == attempts || !rclcpp::ok()) {
+          break;
+        }
+        RCLCPP_WARN(
+          get_logger(),
+          "Camera Init attempt %d/%d failed: %s Retrying in %d ms.",
+          attempt,
+          attempts,
+          last_error.c_str(),
+          camera_init_retry_delay_ms_);
+        std::this_thread::sleep_for(std::chrono::milliseconds(camera_init_retry_delay_ms_));
+      }
+    }
+
+    throw std::runtime_error(
+            "Camera Init failed after " + std::to_string(attempts) + " attempts: " + last_error);
   }
 
   CameraPtr SelectCamera()
@@ -2403,34 +2464,65 @@ private:
         ptp_action_rate_hz_,
         ptp_action_schedule_ahead_ms_);
 
+      std::uint64_t consecutive_failures = 0U;
+
       while (rclcpp::ok() && running_.load()) {
-        const std::uint64_t camera_now = ReadCameraTimestampTicks();
-        const std::uint64_t earliest_action_time =
-          (std::numeric_limits<std::uint64_t>::max() - camera_now < schedule_ahead_ticks) ?
-          std::numeric_limits<std::uint64_t>::max() :
-          camera_now + schedule_ahead_ticks;
+        // Keep a send failure inside the loop. This thread is the trigger source
+        // for every camera in the rig, so letting one exception end it stops all
+        // of them at once, and the only clue is a single line buried under the
+        // -1011 timeouts that follow.
+        try {
+          const std::uint64_t camera_now = ReadCameraTimestampTicks();
+          const std::uint64_t earliest_action_time =
+            (std::numeric_limits<std::uint64_t>::max() - camera_now < schedule_ahead_ticks) ?
+            std::numeric_limits<std::uint64_t>::max() :
+            camera_now + schedule_ahead_ticks;
 
-        if (next_action_time < earliest_action_time) {
-          next_action_time = earliest_action_time;
-        }
+          if (next_action_time < earliest_action_time) {
+            next_action_time = earliest_action_time;
+          }
 
-        SendScheduledActionCommand(next_action_time);
-        ++sent_count;
+          SendScheduledActionCommand(next_action_time);
+          ++sent_count;
 
-        const auto now_time = std::chrono::steady_clock::now();
-        if (ptp_action_log_interval_sec_ > 0.0 && now_time >= next_log_time) {
-          RCLCPP_INFO(
+          if (consecutive_failures > 0U) {
+            RCLCPP_INFO(
+              get_logger(),
+              "PTP action sender recovered after %lu consecutive failures.",
+              static_cast<unsigned long>(consecutive_failures));
+            consecutive_failures = 0U;
+          }
+
+          const auto now_time = std::chrono::steady_clock::now();
+          if (ptp_action_log_interval_sec_ > 0.0 && now_time >= next_log_time) {
+            RCLCPP_INFO(
+              get_logger(),
+              "PTP action sender scheduled %lu commands; next_action_time=%lu ticks.",
+              static_cast<unsigned long>(sent_count),
+              static_cast<unsigned long>(next_action_time));
+            next_log_time = now_time + log_interval;
+          }
+
+          next_action_time =
+            (std::numeric_limits<std::uint64_t>::max() - next_action_time < period_ticks) ?
+            earliest_action_time :
+            next_action_time + period_ticks;
+        } catch (const std::exception & exception) {
+          ++consecutive_failures;
+          RCLCPP_ERROR_THROTTLE(
             get_logger(),
-            "PTP action sender scheduled %lu commands; next_action_time=%lu ticks.",
-            static_cast<unsigned long>(sent_count),
-            static_cast<unsigned long>(next_action_time));
-          next_log_time = now_time + log_interval;
-        }
+            *get_clock(),
+            2000,
+            "PTP action sender error (%lu in a row): %s Recovering.",
+            static_cast<unsigned long>(consecutive_failures),
+            exception.what());
 
-        next_action_time =
-          (std::numeric_limits<std::uint64_t>::max() - next_action_time < period_ticks) ?
-          earliest_action_time :
-          next_action_time + period_ticks;
+          RefreshSpinnakerInterfaces();
+          // The camera clock is the only source of truth for the schedule, so
+          // drop the stale target and re-derive it on the next pass.
+          next_action_time = 0U;
+          next_send_time = std::chrono::steady_clock::now();
+        }
 
         next_send_time += host_period;
         const auto loop_done_time = std::chrono::steady_clock::now();
@@ -2445,6 +2537,26 @@ private:
         RCLCPP_ERROR(get_logger(), "PTP action sender stopped after error: %s", exception.what());
         running_.store(false);
       }
+    }
+  }
+
+  // Spinnaker reports -1002 ("Interface has been removed from the list and is no
+  // longer valid") when its cached interface list goes stale, which is how a
+  // camera or NIC dropping off the bus surfaces during a send. Refreshing the
+  // list lets the next send resolve again.
+  void RefreshSpinnakerInterfaces()
+  {
+    try {
+      if (system_) {
+        system_->UpdateInterfaceList();
+      }
+    } catch (const std::exception & exception) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(),
+        *get_clock(),
+        5000,
+        "Could not refresh the Spinnaker interface list: %s",
+        exception.what());
     }
   }
 
@@ -3264,6 +3376,8 @@ private:
   std::string frame_id_;
   std::string camera_serial_;
   int camera_index_;
+  int camera_init_max_attempts_;
+  int camera_init_retry_delay_ms_;
   int acquisition_timeout_ms_;
   bool use_camera_timestamp_in_header_;
   std::string camera_info_yaml_path_;

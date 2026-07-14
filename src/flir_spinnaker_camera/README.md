@@ -125,7 +125,18 @@ ros2 launch flir_spinnaker_camera flir_camera.launch.py \
 ## 멀티캠 실행
 
 멀티캠 inventory는 `config/multicam_cameras.yaml`에서 관리한다. 토픽 구분은
-`camera0`, `camera1` 같은 namespace로 단순화하고, 실제 장치 매핑은 serial로 한다.
+장착 위치 기반 namespace로 하고, 실제 장치 매핑은 serial로 한다. 현재 rig 구성:
+
+| 카메라 (namespace) | Serial | IP | MAC |
+| --- | --- | --- | --- |
+| `camera_center` | 25415248 | 192.168.1.1 | 2CDDA383CE50 |
+| `camera_front_right` | 26076473 | 192.168.1.2 | 2CDDA38DE539 |
+| `camera_front_left` | 26076477 | 192.168.1.3 | 2CDDA38DE53D |
+| `camera_side_right_1` | 25415254 | 192.168.1.4 | 2CDDA383CE56 |
+| `camera_side_right_2` | 26076472 | 192.168.1.5 | 2CDDA38DE538 |
+| `camera_side_left_1` | 25415250 | 192.168.1.6 | 2CDDA383CE52 |
+| `camera_side_left_2` | 25415249 | 192.168.1.7 | 2CDDA383CE51 |
+| `camera_rear` | 26076003 | 192.168.1.8 | 2CDDA38DE363 |
 
 ```bash
 ros2 launch flir_spinnaker_camera multicam.launch.py
@@ -133,29 +144,32 @@ ros2 launch flir_spinnaker_camera multicam.launch.py
 
 예시 토픽:
 
-- `/camera0/image_rgb/compressed`
-- `/camera0/camera_info`
-- `/camera1/image_rgb/compressed`
-- `/camera1/camera_info`
+- `/camera_center/image_rgb/compressed`
+- `/camera_center/camera_info`
+- `/camera_front_right/image_rgb/compressed`
+- `/camera_front_right/camera_info`
 
 모든 카메라 노드는 같은 `config/flir_camera.yaml`을 사용하며, launch에서는
 `camera_serial`, `frame_id`, `camera_info.yaml_path`만 카메라별로 override한다.
 
 연결된 Spinnaker 카메라를 launch 전에 감지해서 inventory YAML을 자동 갱신할 수도 있다.
-기존 serial 설정은 유지하고, 새로 감지된 serial만 `cameraN` 항목으로 추가한다.
+기존 serial 설정은 유지하고, 새로 감지된 serial만 `cameraN` 항목으로 추가한다. 새 항목은
+위치 이름이 아니라 `cameraN`으로 들어오므로, rig에 카메라를 추가했다면 name/namespace/
+frame_id를 위치 이름으로 직접 고쳐 준다.
 
 ```bash
 ros2 launch flir_spinnaker_camera multicam.launch.py \
   auto_update_cameras_file:=true
 ```
 
-카메라별 ForceIP도 함께 채우려면 시작 IP를 준다. 아래 예시는 새 카메라들에
-`192.168.1.206`, `192.168.1.207`, ... 순서로 `force_ip_address`를 채운다.
+카메라별 ForceIP도 함께 채우려면 시작 IP를 준다. 기존 항목의 `force_ip_address`는
+그대로 두고, 비어 있는 항목만 사용 중이 아닌 주소로 채운다. 현재 rig는 `192.168.1.1` ~
+`192.168.1.8`을 쓰므로 새 카메라는 `192.168.1.9`부터 받는다.
 
 ```bash
 ros2 launch flir_spinnaker_camera multicam.launch.py \
   auto_update_cameras_file:=true \
-  auto_update_force_ip_base:=192.168.1.206
+  auto_update_force_ip_base:=192.168.1.1
 ```
 
 쓰기 없이 결과만 확인하려면 inventory tool을 직접 dry-run으로 실행한다.
@@ -163,7 +177,7 @@ ros2 launch flir_spinnaker_camera multicam.launch.py \
 ```bash
 ros2 run flir_spinnaker_camera flir_multicam_inventory_tool \
   --output src/flir_spinnaker_camera/config/multicam_cameras.yaml \
-  --force-ip-base 192.168.1.206 \
+  --force-ip-base 192.168.1.1 \
   --new-hardware-trigger-role none \
   --new-ptp-action-role receiver \
   --first-camera-ptp-sender \
@@ -181,11 +195,11 @@ ros2 run flir_spinnaker_camera flir_multicam_inventory_tool \
 멀티캠에서는 `config/multicam_cameras.yaml`에 카메라별 주소를 적는다.
 
 ```yaml
-- name: camera0
+- name: "camera_center"
   serial: "25415248"
-  namespace: "camera0"
-  frame_id: "camera0_optical_frame"
-  force_ip_address: "192.168.1.206"
+  namespace: "camera_center"
+  frame_id: "camera_center_optical_frame"
+  force_ip_address: "192.168.1.1"
   force_ip_subnet_mask: "255.255.255.0"
   force_ip_gateway: "0.0.0.0"
 ```
@@ -198,7 +212,7 @@ ros2 run flir_spinnaker_camera flir_multicam_inventory_tool \
 ```bash
 ros2 launch flir_spinnaker_camera flir_camera.launch.py \
   camera_serial:=25415248 \
-  force_ip_address:=192.168.1.206
+  force_ip_address:=192.168.1.1
 ```
 
 ## BFS GPIO HW trigger
@@ -206,15 +220,15 @@ ros2 launch flir_spinnaker_camera flir_camera.launch.py \
 멀티캠 GPIO 케이블을 쓸 때는 `config/multicam_cameras.yaml`에서 카메라별 역할을 지정한다.
 
 ```yaml
-- name: camera0
+- name: "camera_center"
   serial: "25415248"
-  namespace: "camera0"
-  frame_id: "camera0_optical_frame"
+  namespace: "camera_center"
+  frame_id: "camera_center_optical_frame"
   hardware_trigger_role: "master"
-- name: camera1
-  serial: "25415255"
-  namespace: "camera1"
-  frame_id: "camera1_optical_frame"
+- name: "camera_front_right"
+  serial: "26076473"
+  namespace: "camera_front_right"
+  frame_id: "camera_front_right_optical_frame"
   hardware_trigger_role: "slave"
 ```
 
@@ -289,16 +303,16 @@ scripts/setup_camera_nic.bash --interface enp5s0 --host-cidr 192.168.1.10/24
 해당 카메라도 같은 action command로 촬영된다.
 
 ```yaml
-- name: camera0
+- name: "camera_center"
   serial: "25415248"
-  namespace: "camera0"
-  frame_id: "camera0_optical_frame"
+  namespace: "camera_center"
+  frame_id: "camera_center_optical_frame"
   hardware_trigger_role: "none"
   ptp_action_role: "sender"
-- name: camera1
-  serial: "25415255"
-  namespace: "camera1"
-  frame_id: "camera1_optical_frame"
+- name: "camera_front_right"
+  serial: "26076473"
+  namespace: "camera_front_right"
+  frame_id: "camera_front_right_optical_frame"
   hardware_trigger_role: "none"
   ptp_action_role: "receiver"
 ```
@@ -326,8 +340,8 @@ ros2 launch flir_spinnaker_camera flir_camera.launch.py \
 calibrated rig transform을 `/tf_static`에 publish한다.
 
 ```text
-flir_rig_frame -> camera0_optical_frame
-flir_rig_frame -> camera1_optical_frame
+flir_rig_frame -> camera_center_optical_frame
+flir_rig_frame -> camera_front_right_optical_frame
 ```
 
 YAML의 `extrinsics_by_serial` 항목 중 `config/multicam_cameras.yaml` inventory에

@@ -4,7 +4,7 @@ flir_camera:
     # Base node configuration
     # --------------------------------------------------------------------------
     # Camera selection: leave camera_serial empty to use camera_index.
-    camera_serial: ""
+    camera_serial: "25415248"
     camera_index: 0
     frame_id: "flir_camera_optical_frame"
     # Keep this comfortably above the frame interval.
@@ -46,11 +46,23 @@ flir_camera:
     # - 즉 packed 포맷의 이득은 주로 camera->PC 링크에서 생기고,
     #   ros2 topic bw /image_raw 에서는 그대로 보이지 않을 수 있습니다.
     auto_pixel_format: false
-    pixel_format: "BayerRG16"
+    # Only image_rgb/compressed is published (publish_raw: false), and that path
+    # ends in an 8-bit JPEG. A 16-bit container would double the camera->PC
+    # bandwidth without reaching any consumer, so stay at 8-bit Bayer.
+    pixel_format: "BayerRG8"
     # OldestFirst: 쌓인 프레임을 순서대로 처리. 끊김은 줄 수 있지만 지연이 늘 수 있음.
     # NewestOnly : 오래된 프레임을 버리고 최신 프레임 위주로 처리. 지연은 적지만 점프처럼 보일 수 있음.
     buffer_handling_mode: "NewestOnly"
-    color_processing: "hq_linear"
+    # Debayering runs on the host, once per frame per camera, and it is the
+    # tightest CPU budget in the rig: eight cameras x 30 Hz x 1920x1200 leaves
+    # 33 ms per frame in a single acquisition thread. hq_linear does not fit — it
+    # overran the budget and NewestOnly then discarded the late frames silently,
+    # losing 2-3% of every camera's frames with no warning anywhere.
+    # Measured over 20 s, all eight cameras: hq_linear 1.7-3.0% frames lost,
+    # ipp 0.00%, bilinear 0.00%. ipp is SIMD-optimized and looks better than
+    # bilinear, so it wins. Options: nearest_neighbor, nearest_neighbor_avg,
+    # bilinear, edge_sensing, ipp, directional_filter, rigorous, hq_linear.
+    color_processing: "ipp"
 
     # Topic output control
     # - publish_raw:
@@ -139,11 +151,21 @@ flir_camera:
     # Exposure
     # --------------------------------------------------------------------------
     # Off | Once | Continuous
-    camera.ExposureAuto: "Continuous"
-    # Exposure time. On this camera, this alias is writable and works well.
-    # camera.ExposureTime_FloatVal: 8000.0
-    # If your model exposes the standard node and it is writable, you can use:
-    # camera.ExposureTime: 8000.0
+    camera.ExposureAuto: "Off"
+    # Exposure time, in microseconds. Set this explicitly: the cameras persist
+    # exposure in flash, so leaving it unset means each one keeps whatever value
+    # it was last given. That is how two of the eight ended up at 15 ms while the
+    # other six ran at 1 ms — a 15x brightness difference across the rig.
+    #
+    # It also skews synchronization. The camera stamps a frame when its exposure
+    # *ends*, so cameras that expose longer report a later timestamp even though
+    # the action trigger fired at the same instant on all of them. The 15 ms pair
+    # read ~14 ms late, which is exactly their exposure difference, and made a
+    # rig that is actually synchronized to ~3 us look free-running.
+    #
+    # Must stay below the trigger period (1/ptp_action.rate_hz = 33 ms at 30 Hz)
+    # or triggers get skipped. Longer exposure also means more motion blur.
+    camera.ExposureTime: 1000.0
     # Exposure mode is camera-specific; inspect valid enum values if needed:
     # camera.ExposureMode: "Timed"
 
@@ -240,8 +262,11 @@ flir_camera:
     # 고정 IP를 임시 할당합니다. 멀티캠에서는 config/multicam_cameras.yaml에서
     # 카메라별 force_ip_address를 지정하세요. 현재 IP가 목표 IP와 다르면
     # link-local 여부와 무관하게 목표 IP를 우선합니다.
-    network.force_ip.enable: true
-    network.force_ip.address: ""
+    # Off: the eight rig cameras already hold their static addresses
+    # (192.168.1.1-.8), so nothing needs to be forced at every launch. Turn this
+    # back on only to recover a camera that came up link-local.
+    network.force_ip.enable: false
+    network.force_ip.address: "192.168.1.1"
     network.force_ip.subnet_mask: "255.255.255.0"
     network.force_ip.gateway: "0.0.0.0"
     network.force_ip.only_if_link_local: true
@@ -258,7 +283,10 @@ flir_camera:
     ptp.mode: "SlaveOnly"
     ptp.wait_for_sync: true
     ptp.require_sync: true
-    ptp.sync_timeout_ms: 10000
+    # Cameras reach 'Slave' about 6 s after launch, and require_sync=true turns a
+    # miss into a node exit, so the old 10 s left only ~4 s of margin while eight
+    # cameras run BMCA at once against a ptp4l that is still coming up.
+    ptp.sync_timeout_ms: 60000
     ptp.sync_poll_ms: 250
     ptp.accepted_statuses: ["Slave"]
 
@@ -275,7 +303,10 @@ flir_camera:
     ptp_action.device_key: 1
     ptp_action.group_key: 1
     ptp_action.group_mask: 4294967295
-    ptp_action.rate_hz: 5.0
+    # This is the multicam frame rate: every camera fires on the sender's
+    # scheduled action, so fps == rate_hz, regardless of the free-run limits
+    # above. Exposure time must stay below 1/rate_hz or triggers get skipped.
+    ptp_action.rate_hz: 30.0
     # sender가 카메라 timestamp를 latch한 뒤 이만큼 미래의 PTP time으로 action을 예약합니다.
     ptp_action.schedule_ahead_ms: 100.0
     ptp_action.start_delay_ms: 1000.0
@@ -286,12 +317,28 @@ flir_camera:
     # --------------------------------------------------------------------------
     # Camera-side bandwidth limiting
     # --------------------------------------------------------------------------
-    # Limits the maximum bandwidth streamed by the camera.
-    camera.DeviceLinkThroughputLimit: 30000000
+    # GigE stream packet size, in bytes. This MUST fit the PC NIC MTU or the NIC
+    # drops every packet as over-length (visible as rx_long_length_errors in
+    # `ethtool -S`) and no frame ever completes. Cameras persist this value in
+    # flash, so leaving it unset means inheriting whatever SpinView last wrote.
+    # 1400 is safe on a 1500-MTU path. With jumbo frames enabled end to end
+    # (NIC and switch at MTU 9000) raise this to 9000: it cuts the packet rate
+    # ~6x, which matters a lot with eight cameras on one link.
+    camera.GevSCPSPacketSize: 1400
+    # Inter-packet delay in ticks. Raise it if the switch drops packets when all
+    # eight cameras burst at once.
+    camera.GevSCPD: 0
+
+    # Limits the maximum bandwidth streamed by the camera, in bytes/sec. This is
+    # a hard cap on frame rate: fps <= limit / (width * height * bytes_per_pixel).
+    # At 1920x1200 BayerRG8 (2.3 MB/frame), 100 MB/s allows ~43 fps. Each camera
+    # has its own 1 GbE link (~110 MB/s ceiling); eight of them share the PC's
+    # 10 GbE NIC, so 8 x 100 MB/s still fits the uplink.
+    camera.DeviceLinkThroughputLimit: 100000000
     # Bandwidth reserve for link robustness / resends.
     # camera.DeviceLinkBandwidthReserve: 0
 
-    # --------------------------------------------------------------------------
+    # -------------------------------------------------ㄴ-------------------------
     # Host stream receiver settings
     # --------------------------------------------------------------------------
     # Manual buffer count control on the host-side stream receiver.
