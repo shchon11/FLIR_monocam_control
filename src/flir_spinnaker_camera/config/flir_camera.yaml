@@ -165,7 +165,13 @@ flir_camera:
     #
     # Must stay below the trigger period (1/ptp_action.rate_hz = 33 ms at 30 Hz)
     # or triggers get skipped. Longer exposure also means more motion blur.
-    camera.ExposureTime: 1000.0
+    #
+    # 15 ms is what this scene needs. At 1 ms the frames came out essentially
+    # black (mean pixel 3-5 of 255) with GainDB_Val at 0; running ExposureAuto
+    # here pinned all eight cameras to 14993 us — the camera's auto upper limit —
+    # and brought the mean to 45-72. If you shorten this for a moving rig, raise
+    # camera.GainDB_Val to compensate or the image goes dark again.
+    camera.ExposureTime: 15000.0
     # Exposure mode is camera-specific; inspect valid enum values if needed:
     # camera.ExposureMode: "Timed"
 
