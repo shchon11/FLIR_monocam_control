@@ -1626,18 +1626,26 @@ private:
     RCLCPP_INFO(get_logger(), "Camera acquisition started.");
   }
 
-  // Spinnaker raises -1005 while another controller still holds the camera. That
-  // is the only Init() failure worth retrying: it clears as soon as the other
-  // holder lets go. Everything else — updater image mode, bad firmware, an
-  // unreachable device — needs a human, so retrying just buries the real message
-  // under a stack of identical warnings.
+  // Init() failures split into transient ones worth retrying and hard ones that
+  // need a human. Two codes clear on their own:
+  //   -1005 another controller still holds the camera; clears when it lets go.
+  //   -1010 register I/O write error ("Please try reconnecting the device").
+  //         Every camera node enumerates the whole rig, so a simultaneous launch
+  //         makes their Init() calls contend for each camera's single Read/Write
+  //         slot and one or two hit this — SpinView, which opens cameras one at a
+  //         time, never does. A retry (exactly what the message asks for) recovers
+  //         it, so this no longer takes a healthy camera down on every launch.
+  // Everything else — updater image mode (-1015), bad firmware, an unreachable
+  // device — will not clear by re-Init, so retrying just buries the real message
+  // under a stack of identical warnings; let those fail fast.
   static bool IsRetryableInitError(const std::exception & exception)
   {
     const auto * spinnaker_exception = dynamic_cast<const Spinnaker::Exception *>(&exception);
     if (spinnaker_exception == nullptr) {
       return false;
     }
-    return static_cast<int>(spinnaker_exception->GetError()) == -1005;
+    const int error = static_cast<int>(spinnaker_exception->GetError());
+    return error == -1005 || error == -1010;
   }
 
   // Every camera node enumerates the whole rig, so their Init() calls contend for

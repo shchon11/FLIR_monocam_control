@@ -71,6 +71,12 @@ ros2 launch flir_spinnaker_camera flir_camera.launch.py camera_serial:=12345678
 ros2 launch flir_spinnaker_camera multicam.launch.py
 ```
 
+카메라 8대 + Ouster 라이다 전체:
+
+```bash
+ros2 launch flir_spinnaker_camera all_sensors.launch.py
+```
+
 intrinsic calibration:
 
 ```bash
@@ -213,6 +219,62 @@ ros2 launch flir_spinnaker_camera multicam.launch.py auto_update_cameras_file:=t
 카메라별 ForceIP, GPIO hardware trigger, PTP scheduled action trigger, extrinsic TF
 설정은 `src/flir_spinnaker_camera/README.md`에 모아 두었다.
 
+## Lidar (Ouster OS-2-128)
+
+라이다는 이 워크스페이스에서 빌드하지 않는다. `ouster_ros`는 ROS underlay
+(`/opt/ros/humble`)에 이미 설치되어 있고, overlay가 underlay를 가리지 않으므로
+`source scripts/setup_flir_env.bash` 후 그대로 쓸 수 있다.
+
+`all_sensors.launch.py`가 `multicam.launch.py`와 ouster 드라이버를 함께 띄운다.
+
+```bash
+# 전체 (카메라 8대 + 라이다)
+ros2 launch flir_spinnaker_camera all_sensors.launch.py
+
+# 라이다만
+ros2 launch flir_spinnaker_camera all_sensors.launch.py enable_cameras:=false
+
+# 카메라만 (multicam.launch.py와 동일)
+ros2 launch flir_spinnaker_camera all_sensors.launch.py enable_lidar:=false
+```
+
+| 인자 | 기본값 | 설명 |
+|---|---|---|
+| `enable_cameras` / `enable_lidar` | `true` | 각 서브시스템 포함 여부 |
+| `lidar_required` | `true` | 사전 점검에서 라이다가 응답 없으면 런치 중단 |
+| `lidar_params_file` | (패키지 config) | ouster 드라이버 파라미터 경로 |
+| `lidar_namespace` | `ouster` | 라이다 토픽 네임스페이스 |
+| `lidar_viz` | `false` | ouster rviz2 동시 실행 |
+
+카메라 인자는 `camera_` 접두사로 전달한다
+(예: `camera_ptp_master_interface:=enp3s0f1`). 비워 두면 `multicam.launch.py`의
+기본값이 그대로 쓰인다 — 카메라 동작의 기준은 여전히 그 파일이다.
+
+**두 센서가 서로 간섭하지 않는 이유:**
+
+- **NIC가 다르다.** 카메라는 `enp3s0f1`(10 GbE, 192.168.1.0/24), 라이다는
+  `eno1`(1 GbE, 169.254.0.0/16). 대역폭을 공유하지 않는다.
+- **시계가 같다.** 라이다는 `TIME_FROM_ROS_TIME`, 카메라 `header.stamp`는 호스트
+  도착 시각이라 둘 다 시스템 시계를 읽는다. `multicam.launch.py`가 띄우는 `ptp4l`은
+  카메라 NIC에 grandmaster로만 붙고 `-s`도 `phc2sys`도 없어 시스템 시계를 조정하지
+  않는다. 즉 PTP가 두 센서의 상대 시각을 흔들지 않는다.
+
+**주의 — 라이다 장애가 카메라까지 내린다.** ouster의 `driver.launch.py`는 센서와
+통신하지 못하면 `launch.events.Shutdown`을 발생시키는데, 이 이벤트는 런치 전체에
+적용되어 카메라 8대도 같이 종료된다. `IncludeLaunchDescription` 단위로 막을 방법이
+없다. 그래서 `all_sensors.launch.py`는 **아무 노드도 띄우기 전에** 라이다 TCP 80
+포트를 먼저 확인하고, 응답이 없으면 카메라를 시작하지 않은 채 중단한다.
+`lidar_required:=false`로 경고만 남기게 바꿀 수 있지만, 실제로 통신에 실패하면
+결국 전체가 내려가는 것은 동일하다.
+
+라이다 파라미터는 `src/flir_spinnaker_camera/config/lidar_driver_params.yaml`이
+기준이다. 원래 `~/lidar_ws/config/driver_params.yaml`에 있던 것을 워크스페이스 밖
+경로 의존을 없애려고 리포 안으로 옮겼으므로, `~/lidar_ws` 쪽을 고쳐도 반영되지 않는다.
+
+> `~/flir_ouster_ws`는 별개의 워크스페이스다. upstream `spinnaker_camera_driver`를
+> 쓰고 `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`를 강제하므로, 이 리포와 RMW가 달라
+> 섞어서 실행하면 토픽이 서로 보이지 않는다. 둘 중 하나만 쓸 것.
+
 ## Calibration
 
 intrinsic calibration은 OpenCV 창에서 진행한다.
@@ -272,6 +334,19 @@ ros2 bag record \
       echo "/$cam/image_raw /$cam/image_rgb/compressed /$cam/camera_info /$cam/image_raw/metadata"
     done)
 ```
+
+카메라만 기록할 때는 `scripts/camera_bagging.sh`, 라이다까지 같이 기록할 때는
+`scripts/all_sensors_bagging.sh`를 쓴다. 후자는 카메라 토픽 + `/ouster/lidar_packets`,
+`/ouster/imu_packets`, `/ouster/metadata`, `/ouster/imu`, `/tf`, `/tf_static`을
+하나의 mcap bag에 담고, 기록 전에 토픽이 실제로 올라와 있는지 확인한다.
+
+```bash
+scripts/all_sensors_bagging.sh
+```
+
+`/ouster/points`가 아니라 `lidar_packets`를 기록하는 이유는 points가 replay 때
+패킷에서 복원되기 때문이다. `/ouster/metadata`가 없으면 복원이 불가능하므로
+반드시 같이 담아야 한다.
 
 ## nuScenes Export
 

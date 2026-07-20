@@ -101,6 +101,8 @@ def _build_node(context):
         "window_name",
         "input_qos_reliability",
         "camera_info_qos_reliability",
+        "board_type",
+        "aruco_dictionary",
     ):
         value = _optional_override(context, name)
         if value is not None:
@@ -119,14 +121,17 @@ def _build_node(context):
         "preview_max_width",
         "input_qos_depth",
         "camera_info_qos_depth",
+        "charuco_squares_x",
+        "charuco_squares_y",
     ):
         value = _optional_override(context, name, int)
         if value is not None:
             parameter_overrides[name] = value
 
-    value = _optional_override(context, "square_size_m", float)
-    if value is not None:
-        parameter_overrides["square_size_m"] = value
+    for name in ("square_size_m", "charuco_square_length_m", "charuco_marker_length_m"):
+        value = _optional_override(context, name, float)
+        if value is not None:
+            parameter_overrides[name] = value
 
     return [
         Node(
@@ -191,6 +196,12 @@ def generate_launch_description():
             DeclareLaunchArgument("board_cols", default_value="", description="Override chessboard inner-corner columns."),
             DeclareLaunchArgument("board_rows", default_value="", description="Override chessboard inner-corner rows."),
             DeclareLaunchArgument("square_size_m", default_value="", description="Override chessboard square size in meters."),
+            DeclareLaunchArgument("board_type", default_value="", description="Override board type: chessboard or charuco."),
+            DeclareLaunchArgument("charuco_squares_x", default_value="", description="Override ChArUco board square count in X."),
+            DeclareLaunchArgument("charuco_squares_y", default_value="", description="Override ChArUco board square count in Y."),
+            DeclareLaunchArgument("charuco_square_length_m", default_value="", description="Override ChArUco square length in meters."),
+            DeclareLaunchArgument("charuco_marker_length_m", default_value="", description="Override ChArUco marker length in meters."),
+            DeclareLaunchArgument("aruco_dictionary", default_value="", description="Override ChArUco ArUco dictionary, e.g. DICT_5X5_1000."),
             DeclareLaunchArgument("min_observations", default_value="", description="Override minimum observations."),
             DeclareLaunchArgument("max_frame_age_ms", default_value="", description="Override freshness limit for capture."),
             DeclareLaunchArgument(

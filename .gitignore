@@ -2,7 +2,7 @@ build/
 install/
 log/
 .omx/
-
+bags/
 # ROS bag recordings and storage shards
 bag/
 bags/
@@ -46,3 +46,9 @@ captures/
 capture/
 captured_images/
 image_dumps/
+
+# Ouster driver metadata dump. ouster_ros writes <sensor-ip>-metadata.json into
+# the *current working directory* when the driver's `metadata` param is empty,
+# so launching from the repo root drops one here. The bag carries the same data
+# on /ouster/metadata, so the loose file is disposable.
+*-metadata.json

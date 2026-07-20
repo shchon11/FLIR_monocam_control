@@ -3,6 +3,13 @@ from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+import yaml
+
+
+def _load_ros_parameters(path: str, node_name: str) -> dict:
+    with open(path, "r", encoding="utf-8") as stream:
+        data = yaml.safe_load(stream) or {}
+    return dict(data.get(node_name, {}).get("ros__parameters", {}))
 
 
 def _parse_bool(value: str) -> bool:
@@ -35,12 +42,14 @@ def _build_node(context):
         "window_name",
         "input_qos_reliability",
         "output_qos_reliability",
+        "board_type",
+        "aruco_dictionary",
     ):
         value = _optional_override(context, name)
         if value is not None:
             parameter_overrides[name] = value
 
-    for name in ("display_window", "preview_fast_check"):
+    for name in ("display_window", "preview_fast_check", "auto_capture"):
         value = _optional_override(context, name, _parse_bool)
         if value is not None:
             parameter_overrides[name] = value
@@ -52,12 +61,26 @@ def _build_node(context):
         "annotated_jpeg_quality",
         "input_qos_depth",
         "output_qos_depth",
+        "charuco_squares_x",
+        "charuco_squares_y",
+        "charuco_min_corners",
+        "auto_capture_target_frames",
+        "auto_capture_max_frames",
     ):
         value = _optional_override(context, name, int)
         if value is not None:
             parameter_overrides[name] = value
 
-    for name in ("square_size_m", "preview_scale"):
+    for name in (
+        "square_size_m",
+        "preview_scale",
+        "charuco_square_length_m",
+        "charuco_marker_length_m",
+        "auto_capture_min_move_frac",
+        "auto_capture_min_interval_sec",
+        "auto_capture_target_rms",
+        "board_min_sharpness",
+    ):
         value = _optional_override(context, name, float)
         if value is not None:
             parameter_overrides[name] = value
@@ -67,6 +90,15 @@ def _build_node(context):
         if value is not None:
             parameter_overrides[name] = value
 
+    # Load the YAML into a plain dict instead of passing the file path. A
+    # parameter file is matched by fully-qualified node name, so once the node
+    # runs under a non-empty namespace (FQN "/<ns>/flir_camera_calibration") the
+    # file's fixed "flir_camera_calibration:" block no longer matches and every
+    # parameter is silently dropped. A dict is applied to the node directly,
+    # regardless of namespace. (Same approach as multicam_calibration.launch.py.)
+    params_file = LaunchConfiguration("params_file").perform(context)
+    shared_parameters = _load_ros_parameters(params_file, "flir_camera_calibration")
+
     return [
         Node(
             package="flir_camera_calibration",
@@ -75,7 +107,7 @@ def _build_node(context):
             namespace=LaunchConfiguration("namespace"),
             output="screen",
             parameters=[
-                LaunchConfiguration("params_file"),
+                shared_parameters,
                 parameter_overrides,
             ],
         )
@@ -148,6 +180,76 @@ def generate_launch_description():
                 "square_size_m",
                 default_value="",
                 description="Override the chessboard square size in meters.",
+            ),
+            DeclareLaunchArgument(
+                "board_type",
+                default_value="",
+                description="Override the board type: chessboard or charuco.",
+            ),
+            DeclareLaunchArgument(
+                "charuco_squares_x",
+                default_value="",
+                description="Override the ChArUco board square count in X.",
+            ),
+            DeclareLaunchArgument(
+                "charuco_squares_y",
+                default_value="",
+                description="Override the ChArUco board square count in Y.",
+            ),
+            DeclareLaunchArgument(
+                "charuco_square_length_m",
+                default_value="",
+                description="Override the ChArUco square length in meters.",
+            ),
+            DeclareLaunchArgument(
+                "charuco_marker_length_m",
+                default_value="",
+                description="Override the ChArUco marker length in meters.",
+            ),
+            DeclareLaunchArgument(
+                "aruco_dictionary",
+                default_value="",
+                description="Override the ChArUco ArUco dictionary, e.g. DICT_5X5_1000.",
+            ),
+            DeclareLaunchArgument(
+                "charuco_min_corners",
+                default_value="",
+                description="Min ChArUco corners to accept a capture (rejects sparse views).",
+            ),
+            DeclareLaunchArgument(
+                "board_min_sharpness",
+                default_value="",
+                description="Min board-region Laplacian variance to accept a capture (rejects blur).",
+            ),
+            DeclareLaunchArgument(
+                "auto_capture",
+                default_value="",
+                description="Auto-capture distinct poses without key presses (true/false).",
+            ),
+            DeclareLaunchArgument(
+                "auto_capture_target_rms",
+                default_value="",
+                description="Quality mode: stop + save when RMS <= this (0 = use frame-count mode).",
+            ),
+            DeclareLaunchArgument(
+                "auto_capture_max_frames",
+                default_value="",
+                description="Quality-mode frame cap: save the best and stop if target RMS unmet.",
+            ),
+            DeclareLaunchArgument(
+                "auto_capture_target_frames",
+                default_value="",
+                description="Count-mode frames before auto-calibrating (used when target_rms<=0).",
+            ),
+            DeclareLaunchArgument(
+                "auto_capture_min_move_frac",
+                default_value="",
+                description="Min distinct-pose distance as a fraction of preview width.",
+            ),
+            DeclareLaunchArgument(
+                "auto_capture_min_interval_sec",
+                default_value="",
+                description="Min seconds between two auto-captures.",
             ),
             DeclareLaunchArgument(
                 "min_calibration_frames",

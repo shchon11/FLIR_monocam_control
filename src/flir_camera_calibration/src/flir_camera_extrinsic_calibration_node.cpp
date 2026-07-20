@@ -29,6 +29,8 @@
 #include "sensor_msgs/msg/camera_info.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
 
+#include "flir_camera_calibration/charuco_board.hpp"
+
 namespace
 {
 
@@ -215,6 +217,12 @@ public:
     input_qos_depth_(declare_parameter<int>("input_qos_depth", 10)),
     camera_info_qos_reliability_(declare_parameter<std::string>("camera_info_qos_reliability", "reliable")),
     camera_info_qos_depth_(declare_parameter<int>("camera_info_qos_depth", 20)),
+    board_type_(declare_parameter<std::string>("board_type", "chessboard")),
+    charuco_squares_x_(declare_parameter<int>("charuco_squares_x", 8)),
+    charuco_squares_y_(declare_parameter<int>("charuco_squares_y", 7)),
+    charuco_square_length_m_(declare_parameter<double>("charuco_square_length_m", 0.12)),
+    charuco_marker_length_m_(declare_parameter<double>("charuco_marker_length_m", 0.09)),
+    aruco_dictionary_name_(declare_parameter<std::string>("aruco_dictionary", "DICT_5X5_1000")),
     board_size_(board_cols_, board_rows_)
   {
     if (camera_namespaces_.size() < 2U) {
@@ -222,6 +230,23 @@ public:
     }
     if (board_cols_ <= 0 || board_rows_ <= 0 || square_size_m_ <= 0.0) {
       throw std::runtime_error("board_cols, board_rows, and square_size_m must be positive.");
+    }
+
+    const std::string normalized_board_type = NormalizeName(board_type_);
+    if (normalized_board_type == "charuco") {
+      use_charuco_ = true;
+    } else if (normalized_board_type == "chessboard") {
+      use_charuco_ = false;
+    } else {
+      throw std::runtime_error("board_type must be either 'chessboard' or 'charuco'.");
+    }
+    if (use_charuco_) {
+      charuco_board_ = std::make_unique<flir_camera_calibration::CharucoBoardModel>(
+        charuco_squares_x_,
+        charuco_squares_y_,
+        charuco_square_length_m_,
+        charuco_marker_length_m_,
+        aruco_dictionary_name_);
     }
 
     FillOptionalCameraMetadata();
@@ -541,22 +566,38 @@ private:
     }
 
     cv::Mat preview_bgr = PreparePreviewImage(processed.latest_bgr);
-    std::vector<cv::Point2f> preview_corners;
-    processed.board_detected = DetectChessboard(preview_bgr, preview_corners, preview_fast_check_);
-    processed.corners = preview_corners;
-
-    if (processed.board_detected && preview_bgr.size() != processed.latest_bgr.size()) {
-      const float scale_x = static_cast<float>(processed.latest_bgr.cols) / static_cast<float>(preview_bgr.cols);
-      const float scale_y = static_cast<float>(processed.latest_bgr.rows) / static_cast<float>(preview_bgr.rows);
-      for (cv::Point2f & corner : processed.corners) {
-        corner.x *= scale_x;
-        corner.y *= scale_y;
-      }
-    }
-
     processed.annotated_bgr = preview_bgr.clone();
-    if (processed.board_detected) {
-      cv::drawChessboardCorners(processed.annotated_bgr, board_size_, preview_corners, true);
+
+    if (use_charuco_) {
+      // Preview detection only, for visual feedback; the capture path re-detects
+      // at full resolution before solving the pose.
+      cv::Mat preview_charuco_corners;
+      cv::Mat preview_charuco_ids;
+      processed.board_detected =
+        charuco_board_->Detect(preview_bgr, preview_charuco_corners, preview_charuco_ids);
+      if (processed.board_detected) {
+        charuco_board_->DrawDetected(
+          processed.annotated_bgr, preview_charuco_corners, preview_charuco_ids);
+      }
+    } else {
+      std::vector<cv::Point2f> preview_corners;
+      processed.board_detected = DetectChessboard(preview_bgr, preview_corners, preview_fast_check_);
+      processed.corners = preview_corners;
+
+      if (processed.board_detected && preview_bgr.size() != processed.latest_bgr.size()) {
+        const float scale_x =
+          static_cast<float>(processed.latest_bgr.cols) / static_cast<float>(preview_bgr.cols);
+        const float scale_y =
+          static_cast<float>(processed.latest_bgr.rows) / static_cast<float>(preview_bgr.rows);
+        for (cv::Point2f & corner : processed.corners) {
+          corner.x *= scale_x;
+          corner.y *= scale_y;
+        }
+      }
+
+      if (processed.board_detected) {
+        cv::drawChessboardCorners(processed.annotated_bgr, board_size_, preview_corners, true);
+      }
     }
 
     const cv::Scalar status_color = processed.board_detected ? cv::Scalar(40, 220, 40) : cv::Scalar(40, 40, 230);
@@ -740,6 +781,67 @@ private:
     return pose;
   }
 
+  CameraPose SolveCharucoBoardPose(
+    const sensor_msgs::msg::CameraInfo & camera_info,
+    const cv::Mat & charuco_corners,
+    const cv::Mat & charuco_ids,
+    const std::string & camera_name) const
+  {
+    const cv::Mat camera_matrix = CameraMatrix(camera_info);
+    const cv::Mat distortion_coefficients = DistortionCoefficients(camera_info);
+    cv::Vec3d rotation_vector;
+    cv::Vec3d translation_vector;
+
+    const bool solved = charuco_board_->EstimatePose(
+      charuco_corners,
+      charuco_ids,
+      camera_matrix,
+      distortion_coefficients,
+      rotation_vector,
+      translation_vector);
+    if (!solved) {
+      throw std::runtime_error("estimatePoseCharucoBoard failed for " + camera_name);
+    }
+
+    CameraPose pose;
+    pose.rotation_cam_board = MatxFromRodrigues(cv::Mat(rotation_vector));
+    pose.translation_cam_board = translation_vector;
+    pose.reprojection_error = CharucoReprojectionError(
+      charuco_corners,
+      charuco_ids,
+      camera_matrix,
+      distortion_coefficients,
+      rotation_vector,
+      translation_vector);
+    return pose;
+  }
+
+  double CharucoReprojectionError(
+    const cv::Mat & charuco_corners,
+    const cv::Mat & charuco_ids,
+    const cv::Mat & camera_matrix,
+    const cv::Mat & distortion_coefficients,
+    const cv::Vec3d & rotation_vector,
+    const cv::Vec3d & translation_vector) const
+  {
+    const std::vector<cv::Point3f> object_points = charuco_board_->ObjectPointsForIds(charuco_ids);
+    const std::vector<cv::Point2f> image_points = charuco_board_->ImagePoints(charuco_corners);
+    if (object_points.empty() || object_points.size() != image_points.size()) {
+      return 0.0;
+    }
+
+    std::vector<cv::Point2f> projected_points;
+    cv::projectPoints(
+      object_points,
+      cv::Mat(rotation_vector),
+      cv::Mat(translation_vector),
+      camera_matrix,
+      distortion_coefficients,
+      projected_points);
+    const double error = cv::norm(image_points, projected_points, cv::NORM_L2);
+    return error / std::sqrt(static_cast<double>(std::max<std::size_t>(1U, projected_points.size())));
+  }
+
   void CaptureObservation()
   {
     const std::vector<CaptureCameraSnapshot> snapshots = SnapshotCamerasForCapture();
@@ -775,21 +877,52 @@ private:
         continue;
       }
 
-      std::vector<cv::Point2f> full_resolution_corners;
-      if (!DetectChessboard(full_resolution_bgr, full_resolution_corners, false)) {
+      CameraPose pose;
+      try {
+        if (use_charuco_) {
+          cv::Mat charuco_corners;
+          cv::Mat charuco_ids;
+          if (!charuco_board_->Detect(full_resolution_bgr, charuco_corners, charuco_ids) ||
+            static_cast<int>(charuco_ids.total()) <
+            flir_camera_calibration::CharucoBoardModel::kMinCornersForPose)
+          {
+            RCLCPP_WARN(
+              get_logger(),
+              "Skipping %s: ChArUco board was not detected (or too few corners) in latest "
+              "full-resolution image.",
+              snapshot.name.c_str());
+            continue;
+          }
+          pose = SolveCharucoBoardPose(
+            snapshot.camera_info, charuco_corners, charuco_ids, snapshot.name);
+        } else {
+          std::vector<cv::Point2f> full_resolution_corners;
+          if (!DetectChessboard(full_resolution_bgr, full_resolution_corners, false)) {
+            RCLCPP_WARN(
+              get_logger(),
+              "Skipping %s: chessboard was not detected in latest full-resolution image.",
+              snapshot.name.c_str());
+            continue;
+          }
+
+          CameraRuntime solved_camera;
+          solved_camera.name = snapshot.name;
+          solved_camera.camera_info = snapshot.camera_info;
+          solved_camera.corners = std::move(full_resolution_corners);
+          pose = SolveCameraBoardPose(solved_camera);
+        }
+      } catch (const cv::Exception & exception) {
         RCLCPP_WARN(
-          get_logger(),
-          "Skipping %s: chessboard was not detected in latest full-resolution image.",
-          snapshot.name.c_str());
+          get_logger(), "Skipping %s: pose estimation failed: %s",
+          snapshot.name.c_str(), exception.what());
+        continue;
+      } catch (const std::exception & exception) {
+        RCLCPP_WARN(get_logger(), "Skipping %s: %s", snapshot.name.c_str(), exception.what());
         continue;
       }
 
-      CameraRuntime solved_camera;
-      solved_camera.name = snapshot.name;
-      solved_camera.camera_info = snapshot.camera_info;
-      solved_camera.corners = std::move(full_resolution_corners);
       observation.camera_indices.push_back(snapshot.camera_index);
-      observation.poses.push_back(SolveCameraBoardPose(solved_camera));
+      observation.poses.push_back(pose);
     }
 
     if (require_all_cameras_for_capture_ && observation.poses.size() != cameras_.size()) {
@@ -829,7 +962,7 @@ private:
 
     RCLCPP_INFO(
       get_logger(),
-      "Captured pairwise graph observation %zu with %s. Mean solvePnP reprojection error: %.4f px.",
+      "Captured pairwise graph observation %zu with %s. Mean board-pose reprojection error: %.4f px.",
       observations_.size(),
       captured_names.str().c_str(),
       mean_error);
@@ -1134,13 +1267,21 @@ private:
              << FormatDouble(q.z) << ", "
              << FormatDouble(q.w) << "]\n";
       stream << "    calibration:\n";
-      stream << "      method: \"pairwise_graph_chessboard\"\n";
+      stream << "      method: \""
+             << (use_charuco_ ? "pairwise_graph_charuco" : "pairwise_graph_chessboard") << "\"\n";
       stream << "      reference_camera: \"" << EscapeYamlDoubleQuoted(cameras_[reference_camera_index_].name) << "\"\n";
       stream << "      graph_path: \"" << EscapeYamlDoubleQuoted(FormatGraphPath(graph_pose.path)) << "\"\n";
       stream << "      generated_at_utc: \"" << CurrentUtcTimestamp() << "\"\n";
-      stream << "      board_cols: " << board_cols_ << "\n";
-      stream << "      board_rows: " << board_rows_ << "\n";
-      stream << "      square_size_m: " << FormatDouble(square_size_m_) << "\n";
+      if (use_charuco_) {
+        stream << "      charuco_squares_x: " << charuco_squares_x_ << "\n";
+        stream << "      charuco_squares_y: " << charuco_squares_y_ << "\n";
+        stream << "      charuco_square_length_m: " << FormatDouble(charuco_square_length_m_) << "\n";
+        stream << "      charuco_marker_length_m: " << FormatDouble(charuco_marker_length_m_) << "\n";
+      } else {
+        stream << "      board_cols: " << board_cols_ << "\n";
+        stream << "      board_rows: " << board_rows_ << "\n";
+        stream << "      square_size_m: " << FormatDouble(square_size_m_) << "\n";
+      }
       stream << "      observations: " << observations_.size() << "\n";
       stream << "      path_min_edge_observations: " << graph_pose.min_edge_observations << "\n";
       stream << "      mean_pair_reprojection_error: "
@@ -1276,6 +1417,14 @@ private:
   int input_qos_depth_;
   std::string camera_info_qos_reliability_;
   int camera_info_qos_depth_;
+  std::string board_type_;
+  int charuco_squares_x_;
+  int charuco_squares_y_;
+  double charuco_square_length_m_;
+  double charuco_marker_length_m_;
+  std::string aruco_dictionary_name_;
+  bool use_charuco_{false};
+  std::unique_ptr<flir_camera_calibration::CharucoBoardModel> charuco_board_;
   cv::Size board_size_;
   std::vector<cv::Point3f> base_object_points_;
   std::vector<CameraRuntime> cameras_;
